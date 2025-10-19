@@ -41,7 +41,7 @@ pip install requests tqdm PyQt6
 
 ```
 📂 抖音主页作品解析下载/
-├── 抖音主页作品解析下载.py    # 主程序（命令行 + GUI）
+├── 抖音主页作品解析下载.py         # 主程序（命令行 + GUI）
 ├── config.ini                    # 自动保存 Cookie 与下载路径
 ├── douyin_cookie.txt             # Cookie 快速保存文件(旧版，已废弃)
 └── README.md                     # 使用说明文档
