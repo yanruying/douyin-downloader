@@ -40,7 +40,6 @@ cd douyin-downloader
 ```bash
 pip install requests PyQt6 openpyxl
 ```
-> 如果不需要导出 Excel，可省略 `openpyxl`
 
 ### 3️⃣ 运行程序
 
