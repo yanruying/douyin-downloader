@@ -107,10 +107,10 @@ user1 = 张三,https://www.douyin.com/user/MS4wLjABAAAAxxxx
 
 ```
 .
-├─ dy实况图片-config-V3.4-gemini.py   # 主程序
-├─ config.ini                         # 配置文件（自动生成）
-├─ 作品数据Excel/                     # 导出的 Excel 数据
-└─ downloads/                         # 下载保存目录
+├─ 主程序.py        # 主程序
+├─ config.ini      # 配置文件（自动生成）
+├─ 作品数据Excel/   # 导出的 Excel 数据
+└─ 用户昵称/      # 下载保存目录
 ```
 
 ---
