@@ -139,8 +139,6 @@ A：请安装依赖：`pip install openpyxl`
 ![设置界面](https://raw.githubusercontent.com/yanruying/douyin-downloader/refs/heads/main/251023013445461.png)
 ![Excel导出](https://raw.githubusercontent.com/yanruying/douyin-downloader/refs/heads/main/251023013738453.png)
 
-（可自行替换截图 URL）
-
 ---
 
 ## 🧑‍💻 作者信息
