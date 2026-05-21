@@ -2,7 +2,9 @@
 
 > 🪶 一款基于 Python + PyQt6 的抖音主页作品批量下载工具，支持视频、图集、实况图下载及 Excel 导出。  
 > 本项目完全开源，仅用于学习与研究，禁止任何商业或违法用途。
-![赞赏码](https://raw.githubusercontent.com/yanruying/YanRuYing/refs/heads/main/pay.png)
+> ![赞赏码](https://raw.githubusercontent.com/yanruying/YanRuYing/refs/heads/main/pay.png)
+>
+> 本项目**a_bogus算法**来源于开源项目 [Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)
 ---
 
 ## 🧭 功能特点
@@ -11,6 +13,7 @@
 | ----------------- | ------------------------------------------------------------ |
 | 🔗 **主页解析**    | 自动解析用户主页或短链接，提取 `sec_user_id`                 |
 | 📦 **批量下载**    | 支持批量下载抖音主页所有作品（视频 / 图片 / 实况图）         |
+| 💓 **点赞作品**    | 支持下载抖音用户点赞作品                                     |
 | 🧠 **自动分类**    | 自动按合集（mix）和日期分类保存                              |
 | 📁 **断点续传**    | 自动跳过已存在的文件，避免重复下载                           |
 | 🧾 **Excel 导出**  | 支持导出用户作品数据（类型、发布时间、点赞数、合集等）到 Excel |
@@ -23,7 +26,8 @@
 ## 🛠️ 环境要求
 
 - **Python 版本**：≥ 3.8  
-- **系统支持**：Windows
+- **系统支持**：Windows10 , Windows11
+- **下载exe文件无环境要求，开箱即用**
 ---
 
 ## 🚀 快速开始
@@ -44,7 +48,7 @@ pip install requests PyQt6 openpyxl
 ### 3️⃣ 运行程序
 
 ```bash
-python dy实况图片-config-V3.4-gemini.py
+python main.py
 ```
 
 ### 4️⃣ 填写 Cookie
