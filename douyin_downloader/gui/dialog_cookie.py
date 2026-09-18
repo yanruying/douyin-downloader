@@ -6,7 +6,7 @@ GUI - Cookie Auto Fetch Dialog
 import sys
 import os
 try:
-    from PyQt6 import QtWidgets
+    from PyQt6 import QtWidgets, QtCore
     from PyQt6.QtCore import Qt
 except ImportError:
     print("[错误] PyQt6 未安装或无法导入: \n请安装 PyQt6 后重试（pip install PyQt6）。")
@@ -29,6 +29,7 @@ class CookieFetchWindow(QtWidgets.QDialog):
         self.context = None
         self.page = None
         self.playwright = None
+        self._poll_timer = None
         
     def setup_ui(self):
         """设置界面"""
@@ -36,13 +37,11 @@ class CookieFetchWindow(QtWidgets.QDialog):
         layout.setSpacing(15)
 
         info_text = (
-            "请在点击【开始获取】按钮后弹出的浏览器登录账号\n"
+            "点击【开始获取】后，在浏览器中扫码登录账号\n"
             "\n"
-            "【如果有二次验证请完成二次验证】\n"
+            "如有二次验证请完成二次验证\n"
             "\n"
-            "建议扫码登录\n"
-            "\n"
-            "登录并验证成功后点击【确认】按钮"
+            "登录成功后程序会自动识别并保存 Cookie，并自动关闭浏览器"
         )
         info_label = QtWidgets.QLabel(info_text)
         info_label.setWordWrap(True)
@@ -97,6 +96,12 @@ class CookieFetchWindow(QtWidgets.QDialog):
     def close_browser(self):
         """关闭浏览器并清理资源"""
         try:
+            if self._poll_timer is not None:
+                try:
+                    self._poll_timer.stop()
+                except Exception:
+                    pass
+                self._poll_timer = None
             if self.page:
                 self.page = None
             if self.context:
@@ -204,6 +209,9 @@ class CookieFetchWindow(QtWidgets.QDialog):
             self.context = self.browser.new_context()
             self.page = self.context.new_page()
             self.page.goto("https://www.douyin.com/?recommend=1")
+
+            # 启动轮询，自动检测登录成功
+            self._start_polling()
             
         except ImportError:
             QtWidgets.QMessageBox.warning(
@@ -218,38 +226,83 @@ class CookieFetchWindow(QtWidgets.QDialog):
             self.start_btn.setEnabled(True)
             self.confirm_btn.setEnabled(False)
     
-    def on_confirm(self):
-        """确认并获取Cookie"""
-        if not self.context or not self.browser:
-            QtWidgets.QMessageBox.warning(self, '错误', '请先点击"开始获取"按钮，并等待浏览器启动完成')
+    def _start_polling(self):
+        """启动定时轮询，检测浏览器中是否已完成登录"""
+        self._poll_timer = QtCore.QTimer(self)
+        self._poll_timer.timeout.connect(self._on_poll_tick)
+        self._poll_timer.start(2000)
+
+    def _on_poll_tick(self):
+        """轮询检测登录成功（sessionid 出现即视为登录成功）"""
+        if not self.context:
             return
-            
         try:
             cookies = self.context.cookies("https://www.douyin.com")
+            has_sessionid = any(c.get('name') == 'sessionid' and c.get('value') for c in cookies)
+            if has_sessionid:
+                self._poll_timer.stop()
+                self._save_cookie(cookies)
+        except Exception:
+            pass
 
+    def _find_main_window(self):
+        """向上查找主窗口，用于刷新 Cookie 状态标签"""
+        w = self.parent()
+        while w is not None:
+            if hasattr(w, '_check_cookie_on_startup'):
+                return w
+            w = w.parent()
+        return None
+
+    def _save_cookie(self, cookies):
+        """保存 Cookie 到配置并填回设置窗口，然后关闭对话框"""
+        try:
             cookie_str = "; ".join([f"{cookie.get('name', '')}={cookie.get('value', '')}" for cookie in cookies])
 
             if not self.validate_cookie(cookie_str):
                 QtWidgets.QMessageBox.warning(self, '错误', '获取到的Cookie无效，请重新登录获取')
                 return
-            
+
             config = load_config()
             config['cookie'] = cookie_str
             save_config(config)
-            
+
             # 更新父窗口的Cookie输入框（使用getattr安全访问）
             parent = self.parent()
             if parent:
                 settings_cookie = getattr(parent, 'settings_cookie', None)
                 if settings_cookie:
                     settings_cookie.setPlainText(cookie_str)
-            
+
+            # 刷新主窗口左下角的 Cookie 状态标签
+            main_window = self._find_main_window()
+            if main_window:
+                main_window._check_cookie_on_startup()
+
             self.close_browser()
 
-            QtWidgets.QMessageBox.information(self, '成功', 'Cookie已成功获取并填入设置中')
+            QtWidgets.QMessageBox.information(self, '成功', 'Cookie已成功获取并保存')
 
             self.accept()
-            
+
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, '错误', f'获取Cookie失败: {str(e)}')
+
+    def on_confirm(self):
+        """手动确认并获取Cookie（自动检测未触发时的手动兜底）"""
+        if not self.context or not self.browser:
+            QtWidgets.QMessageBox.warning(self, '错误', '请先点击"开始获取"按钮，并等待浏览器启动完成')
+            return
+
+        try:
+            if self._poll_timer is not None:
+                try:
+                    self._poll_timer.stop()
+                except Exception:
+                    pass
+                self._poll_timer = None
+            cookies = self.context.cookies("https://www.douyin.com")
+            self._save_cookie(cookies)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, '错误', f'获取Cookie失败: {str(e)}')
     

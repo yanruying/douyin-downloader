@@ -74,6 +74,33 @@ def get_user_profile_info(session, sec_user_id):
         return None, f"未知错误: {e}"
 
 
+def get_self_profile_info(session):
+    """获取登录账号自己的资料信息，返回 (data_dict, error_msg) — 其一为 None"""
+    api_url = (
+        f"https://www.douyin.com/aweme/v1/web/user/profile/self/"
+        f"?device_platform=webapp&aid=6383&channel=channel_pc_web"
+    )
+
+    try:
+        r = session.get(api_url, timeout=REQUEST_TIMEOUT)
+        data = r.json()
+
+        if data.get('status_code') == 0 and isinstance(data.get('user'), dict):
+            u = data['user']
+            return {
+                'nickname': u.get('nickname') or '',
+                'unique_id': u.get('unique_id') or '',
+            }, None
+
+        return None, f"API status_code={data.get('status_code')}, message={data.get('status_msg', '')}"
+    except requests.Timeout:
+        return None, "请求超时"
+    except requests.RequestException as e:
+        return None, f"请求失败: {e}"
+    except Exception as e:
+        return None, f"未知错误: {e}"
+
+
 def build_aweme_post_url(sec_user_id, max_cursor=0, count=None, is_first_page=False):
     """构建 aweme/post API 请求参数，返回 (params_dict, base_url)"""
     if count is None:
@@ -82,9 +109,19 @@ def build_aweme_post_url(sec_user_id, max_cursor=0, count=None, is_first_page=Fa
         'device_platform': 'webapp', 'aid': '6383', 'channel': 'channel_pc_web',
         'sec_user_id': sec_user_id, 'max_cursor': max_cursor, 'count': count,
         'locate_query': 'false', 'show_live_replay_strategy': '1',
-        'need_time_list': '1' if is_first_page else '0',
+        'need_time_list': '1' if is_first_page else '0', 'time_list_query': '0',
+        'whale_cut_token': '', 'cut_version': '1',
         'publish_video_strategy_type': '2', 'from_user_page': '1',
-        'update_version_code': '170400',
+        'update_version_code': '170400', 'pc_client_type': '1',
+        'pc_libra_divert': 'Windows', 'support_h265': '1', 'support_dash': '0',
+        'version_code': '290100', 'version_name': '29.1.0',
+        'cookie_enabled': 'true', 'screen_width': '1920', 'screen_height': '1080',
+        'browser_language': 'zh-CN', 'browser_platform': 'Win32',
+        'browser_name': 'Edge', 'browser_version': '131.0.0.0',
+        'browser_online': 'true', 'engine_name': 'Blink', 'engine_version': '131.0.0.0',
+        'os_name': 'Windows', 'os_version': '10', 'cpu_core_num': '12',
+        'device_memory': '8', 'platform': 'PC', 'downlink': '10',
+        'effective_type': '4g', 'round_trip_time': '50',
     }
     base_url = 'https://www.douyin.com/aweme/v1/web/aweme/post/'
     return params, base_url
@@ -97,6 +134,20 @@ def build_aweme_favorite_url(sec_user_id, max_cursor=0, count=None):
     params = {
         'device_platform': 'webapp', 'aid': '6383', 'channel': 'channel_pc_web',
         'sec_user_id': sec_user_id, 'max_cursor': max_cursor, 'count': count,
+        'locate_query': 'false', 'show_live_replay_strategy': '1',
+        'need_time_list': '0', 'time_list_query': '0', 'whale_cut_token': '',
+        'cut_version': '1', 'publish_video_strategy_type': '2',
+        'from_user_page': '1', 'update_version_code': '170400',
+        'pc_client_type': '1', 'pc_libra_divert': 'Windows',
+        'support_h265': '1', 'support_dash': '0',
+        'version_code': '290100', 'version_name': '29.1.0',
+        'cookie_enabled': 'true', 'screen_width': '1920', 'screen_height': '1080',
+        'browser_language': 'zh-CN', 'browser_platform': 'Win32',
+        'browser_name': 'Edge', 'browser_version': '131.0.0.0',
+        'browser_online': 'true', 'engine_name': 'Blink', 'engine_version': '131.0.0.0',
+        'os_name': 'Windows', 'os_version': '10', 'cpu_core_num': '12',
+        'device_memory': '8', 'platform': 'PC', 'downlink': '10',
+        'effective_type': '4g', 'round_trip_time': '50',
     }
     base_url = 'https://www.douyin.com/aweme/v1/web/aweme/favorite/'
     return params, base_url

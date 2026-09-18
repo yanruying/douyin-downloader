@@ -16,14 +16,14 @@ except ImportError:
     print("[错误] PyQt6 未安装或无法导入: \n请安装 PyQt6 后重试（pip install PyQt6）。")
     sys.exit(1)
 from douyin_downloader.constants import (
-    TEXT_INFO_FETCH_PAGE, PAGE_COUNT_PER_REQUEST, MAX_RETRY_DELAY
+    TEXT_INFO_FETCH_PAGE, PAGE_COUNT_PER_REQUEST, MAX_RETRY_DELAY, USER_AGENT
 )
 from douyin_downloader.utils.file_utils import (
     build_expected_filename, clear_directory_cache
 )
 from urllib.parse import quote, urlencode
 from douyin_downloader.core.api import (
-    resolve_short_url_and_extract, get_user_profile_info,
+    resolve_short_url_and_extract, get_user_profile_info, get_self_profile_info,
     build_aweme_post_url, build_aweme_favorite_url, api_request_with_retry
 )
 from douyin_downloader.core.abogus import ABogus
@@ -43,6 +43,7 @@ class Worker(QtCore.QObject):
     download_finished = QtCore.pyqtSignal()
     export_finished_signal = QtCore.pyqtSignal(str)
     export_error_signal = QtCore.pyqtSignal(str)
+    cookie_status_signal = QtCore.pyqtSignal(str)
     finished = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
@@ -57,11 +58,11 @@ class Worker(QtCore.QObject):
         self._total_received = 0
         self.all_awemes = []
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.95 Safari/537.36'})
+        self.session.headers.update({'User-Agent': USER_AGENT})
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20)
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
-        self.abogus = ABogus()
+        self.abogus = ABogus(user_agent=USER_AGENT)
 
         
     def should_stop_download(self):
@@ -93,10 +94,12 @@ class Worker(QtCore.QObject):
 
     def fetch_tasks(self, url, cookie, fetch_mode='post'):
         """
-        获取用户作品列表（在单独线程中运行）。
+        获取作品列表（在单独线程中运行）。
         采用分页增量方式，每获取一页就通过 tasks_signal 发回 GUI。
+        url 可为单个 URL 字符串或 URL 列表（批量获取）。
         fetch_mode: 'post' 获取主页作品, 'favorite' 获取点赞作品
         """
+        urls = [url] if isinstance(url, str) else list(url or [])
         # 递增代际，使旧 fetch 线程失效
         self._fetch_generation += 1
         my_gen = self._fetch_generation
@@ -106,101 +109,24 @@ class Worker(QtCore.QObject):
             self.all_awemes = []
             self._total_received = 0
 
-            headers = {'Cookie': cookie, 'Referer': url}
+            headers = {'Cookie': cookie, 'Referer': (urls[0] if urls else ''), 'x-tt-argus': '1'}
             self.session.headers.update(headers)
             clear_directory_cache()
 
             if not self._is_my_fetch(my_gen):
                 return
-            mode_label = '点赞作品' if fetch_mode == 'favorite' else '主页作品'
+            mode_label = {'favorite': '点赞作品'}.get(fetch_mode, '主页作品')
             self.log_signal.emit(f'[信息] 开始获取{mode_label}')
 
-            sec = resolve_short_url_and_extract(url, session=self.session)
-            if not sec:
-                if self._is_my_fetch(my_gen):
-                    self.log_signal.emit('[错误] 无法解析 sec_user_id')
-                    self.finished.emit()
-                return
-
-            profile, error = get_user_profile_info(self.session, sec)
-            if error:
-                if self._is_my_fetch(my_gen):
-                    self.log_signal.emit(f'[错误] 获取用户信息失败: {error}')
-                    self.finished.emit()
-                return
-            nickname = profile.get('nickname', '') or ''
-            unique_id = profile.get('unique_id', '') or ''
-            if self._is_my_fetch(my_gen):
-                self.log_signal.emit(f"[信息] 抖音用户: {nickname}")
-
-            page = 1
-            max_cursor = 0
-
-            while True:
+            for url in urls:
                 if getattr(self, '_fetch_stop_requested', False):
                     if self._is_my_fetch(my_gen):
                         self.log_signal.emit('[信息] 获取已停止')
                     break
-
                 if not self._is_my_fetch(my_gen):
                     return
+                self._fetch_one(url, fetch_mode, my_gen)
 
-                if fetch_mode == 'favorite':
-                    params, base_url = build_aweme_favorite_url(sec, max_cursor, PAGE_COUNT_PER_REQUEST)
-                else:
-                    params, base_url = build_aweme_post_url(sec, max_cursor, PAGE_COUNT_PER_REQUEST, page == 1)
-                a_bogus = quote(self.abogus.get_value(params), safe='')
-                params['a_bogus'] = a_bogus
-                req_url = base_url + '?' + urlencode(params)
-
-                try:
-                    req_start = time.time()
-                    r = api_request_with_retry(self.session, req_url)
-                    if getattr(self, '_fetch_stop_requested', False):
-                        if self._is_my_fetch(my_gen):
-                            self.log_signal.emit('[信息] 获取已停止')
-                        break
-                    if not self._is_my_fetch(my_gen):
-                        return
-                    data = r.json()
-                except Exception as e:
-                    if self._is_my_fetch(my_gen):
-                        self.log_signal.emit(f"[警告] 第 {page} 页请求异常: {e}")
-                    break
-
-                aweme_list = data.get('aweme_list', []) or []
-                if not aweme_list:
-                    break
-
-                vtasks, itasks, _, _, _ = parse_all_awemes_to_tasks(aweme_list)
-
-                if not self._is_my_fetch(my_gen):
-                    return
-                self.all_awemes.extend(aweme_list)
-
-                if self._is_my_fetch(my_gen):
-                    try:
-                        user_info = f"{nickname}|{unique_id}"
-                        self.tasks_signal.emit(vtasks, itasks, user_info, aweme_list)
-                    except Exception as e:
-                        self.log_signal.emit(f"[警告] tasks_signal.emit 失败: {e}")
-
-                if self._is_my_fetch(my_gen):
-                    self._total_received += len(aweme_list)
-                    self.log_signal.emit(TEXT_INFO_FETCH_PAGE.format(page=page, count=len(aweme_list), total=self._total_received))
-
-                max_cursor = data.get('max_cursor', 0)
-                has_more = data.get('has_more', 0) == 1
-                page += 1
-                
-                # 自适应延迟：根据响应时间调整等待
-                elapsed = time.time() - req_start
-                adaptive_delay = max(0.1, min(1.0, elapsed * 0.5))
-                time.sleep(adaptive_delay)
-                
-                if not has_more:
-                    break
-            
             # 精简 aweme 数据（仅当前代际有效）
             if self._is_my_fetch(my_gen):
                 self.all_awemes = [self._trim_aweme_for_storage(a) for a in self.all_awemes]
@@ -216,6 +142,121 @@ class Worker(QtCore.QObject):
                 except Exception:
                     pass
                 self.finished.emit()
+
+    def _fetch_one(self, url, fetch_mode, my_gen):
+        """获取单个 URL 的作品列表（分页），并增量发回 GUI"""
+        sec = resolve_short_url_and_extract(url, session=self.session)
+        if not sec:
+            if self._is_my_fetch(my_gen):
+                self.log_signal.emit('[错误] 无法解析 sec_user_id')
+            return
+
+        profile, error = get_user_profile_info(self.session, sec)
+        if error:
+            if self._is_my_fetch(my_gen):
+                self.log_signal.emit(f'[错误] 获取用户信息失败: {error}')
+            return
+        nickname = profile.get('nickname', '') or ''
+        unique_id = profile.get('unique_id', '') or ''
+
+        if self._is_my_fetch(my_gen):
+            self.log_signal.emit(f"[信息] 抖音用户: {nickname}")
+
+        page = 1
+        max_cursor = 0
+
+        while True:
+            if getattr(self, '_fetch_stop_requested', False):
+                if self._is_my_fetch(my_gen):
+                    self.log_signal.emit('[信息] 获取已停止')
+                break
+
+            if not self._is_my_fetch(my_gen):
+                return
+
+            if fetch_mode == 'favorite':
+                params, base_url = build_aweme_favorite_url(sec, max_cursor, PAGE_COUNT_PER_REQUEST)
+            else:
+                params, base_url = build_aweme_post_url(sec, max_cursor, PAGE_COUNT_PER_REQUEST, page == 1)
+
+            qs = urlencode(params)
+            a_bogus = self.abogus.generate_abogus(qs)[1]
+            req_url = base_url + '?' + qs + '&a_bogus=' + quote(a_bogus, safe='')
+
+            try:
+                req_start = time.time()
+                r = api_request_with_retry(self.session, req_url)
+                if getattr(self, '_fetch_stop_requested', False):
+                    if self._is_my_fetch(my_gen):
+                        self.log_signal.emit('[信息] 获取已停止')
+                    break
+                if not self._is_my_fetch(my_gen):
+                    return
+                data = r.json()
+            except Exception as e:
+                if self._is_my_fetch(my_gen):
+                    self.log_signal.emit(f"[警告] 第 {page} 页请求异常: {e}")
+                break
+
+            aweme_list = data.get('aweme_list', []) or []
+            if not aweme_list:
+                break
+
+            vtasks, itasks, _, _, _ = parse_all_awemes_to_tasks(aweme_list)
+
+            if not self._is_my_fetch(my_gen):
+                return
+            self.all_awemes.extend(aweme_list)
+
+            if self._is_my_fetch(my_gen):
+                try:
+                    user_info = f"{nickname}|{unique_id}"
+                    self.tasks_signal.emit(vtasks, itasks, user_info, aweme_list)
+                except Exception as e:
+                    self.log_signal.emit(f"[警告] tasks_signal.emit 失败: {e}")
+
+            if self._is_my_fetch(my_gen):
+                self._total_received += len(aweme_list)
+                self.log_signal.emit(TEXT_INFO_FETCH_PAGE.format(page=page, count=len(aweme_list), total=self._total_received))
+
+            page += 1
+
+            max_cursor = data.get('max_cursor', 0)
+            has_more = data.get('has_more', 0) == 1
+
+            # 自适应延迟：根据响应时间调整等待
+            elapsed = time.time() - req_start
+            adaptive_delay = max(0.1, min(1.0, elapsed * 0.5))
+            time.sleep(adaptive_delay)
+
+            if not has_more:
+                break
+
+    def check_cookie_status(self, cookie):
+        """检查 Cookie 状态，返回 'empty' / 'ok' / 'expired'"""
+        try:
+            if not cookie or len(cookie) < 50:
+                return 'empty'
+            headers = {
+                'Cookie': cookie,
+                'Referer': 'https://www.douyin.com/',
+                'x-tt-argus': '1',
+            }
+            self.session.headers.update(headers)
+            _, error = get_self_profile_info(self.session)
+            if error:
+                return 'expired'
+            return 'ok'
+        except Exception:
+            return 'expired'
+
+    def run_cookie_check(self, cookie):
+        """在后台线程中检查 Cookie 状态并发回结果"""
+        status = self.check_cookie_status(cookie)
+        try:
+            self.cookie_status_signal.emit(status)
+        except Exception:
+            pass
 
     def _download_with_retry(self, task, base_folder, is_image, max_retries, session):
         """

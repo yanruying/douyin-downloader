@@ -216,6 +216,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         status_layout = QtWidgets.QHBoxLayout()
         lay.addLayout(status_layout)
+        self.cookie_status_label = QtWidgets.QLabel('Cookie未获取')
+        self.cookie_status_label.setStyleSheet('color: #909399; font-size: 12px;')
+        status_layout.addWidget(self.cookie_status_label)
+        status_layout.addSpacing(16)
         self.status = QtWidgets.QLabel('')
         self.status.setCursor(QtGui.QCursor(Qt.CursorShape.PointingHandCursor))
         self.status.setMouseTracking(True)
@@ -282,12 +286,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.worker.download_finished.connect(self.on_download_finished)
         self.worker.export_finished_signal.connect(self._on_export_finished)
         self.worker.export_error_signal.connect(self._on_export_error)
+        self.worker.cookie_status_signal.connect(self.on_cookie_status)
 
         self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
         self.tree.itemChanged.connect(self.on_tree_item_changed)
 
         self._programmatic_change = False  # 防止联动循环
         self._last_status_text = ''
+
+        # 启动时检查 Cookie 状态
+        QtCore.QTimer.singleShot(0, self._check_cookie_on_startup)
 
         if not os.path.exists(CONFIG_FILE):
             QtCore.QTimer.singleShot(500, self.show_first_time_settings)
@@ -824,44 +832,62 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, '错误', f'无法打开用户列表: {e}')
 
-    def on_fetch(self):
-        """获取作品 / 停止获取"""
-        if self.fetch_btn.text() == '停止获取':
-            try:
-                if hasattr(self.worker, '_fetch_stop_requested'):
-                    self.worker._fetch_stop_requested = True
-                self.append_log('[信息] 已请求停止获取')
-                # 立即更新按钮状态
-                self.fetch_btn.setText('获取作品')
-                self.fetch_btn.setProperty("running", False)
-                style = self.style()
-                if style:
-                    style.unpolish(self.fetch_btn)
-                    style.polish(self.fetch_btn)
-                self.url_label_btn.setEnabled(True)
-                self.settings_btn.setEnabled(True)
-                self.clear_btn.setEnabled(True)
-                self.select_all_btn.setEnabled(True)
-                self.export_excel_btn.setEnabled(True)
-                self.export_urls_btn.setEnabled(True)
-                self.invert_btn.setEnabled(True)
-                self.download_btn.setEnabled(True)
-                self.like_checkbox.setEnabled(True)
-            except Exception:
-                pass
-            if hasattr(self, '_thread') and self._thread and self._thread.is_alive():
-                self._thread.join(timeout=3)
-            return
+    def _current_fetch_mode(self):
+        """根据复选框状态返回当前获取模式"""
+        if self.like_checkbox.isChecked():
+            return 'favorite'
+        return 'post'
 
-        url = self.url_edit.text().strip()
-        if not url:
-            QtWidgets.QMessageBox.warning(self, '提示', '请输入主页链接')
-            return
+    def on_cookie_status(self, status):
+        """更新 Cookie 状态标签（灰色=未获取 / 绿色=正常 / 红色=过期）"""
+        mapping = {
+            'empty': ('Cookie未获取', '#909399'),
+            'ok': ('Cookie状态正常', '#67C23A'),
+            'expired': ('Cookie已过期', '#F56C6C'),
+        }
+        text, color = mapping.get(status, ('Cookie未获取', '#909399'))
+        self.cookie_status_label.setText(text)
+        self.cookie_status_label.setStyleSheet(f"color: {color}; font-size: 12px;")
+
+    def _check_cookie_on_startup(self):
+        """启动时后台检查 Cookie 状态"""
         cookie = cfg.get('cookie', '')
         if not cookie:
-            QtWidgets.QMessageBox.warning(self, '提示', '请在设置中配置 Cookie')
+            self.on_cookie_status('empty')
             return
-        
+        self.cookie_status_label.setText('Cookie状态检查中...')
+        self.cookie_status_label.setStyleSheet('color: #909399; font-size: 12px;')
+        threading.Thread(target=self.worker.run_cookie_check, args=(cookie,), daemon=True).start()
+
+    def _stop_fetch(self):
+        """停止获取作品（恢复界面控件）"""
+        try:
+            if hasattr(self.worker, '_fetch_stop_requested'):
+                self.worker._fetch_stop_requested = True
+            self.append_log('[信息] 已请求停止获取')
+            # 立即更新按钮状态
+            self.fetch_btn.setText('获取作品')
+            self.fetch_btn.setProperty("running", False)
+            style = self.style()
+            if style:
+                style.unpolish(self.fetch_btn)
+                style.polish(self.fetch_btn)
+            self.url_label_btn.setEnabled(True)
+            self.settings_btn.setEnabled(True)
+            self.clear_btn.setEnabled(True)
+            self.select_all_btn.setEnabled(True)
+            self.export_excel_btn.setEnabled(True)
+            self.export_urls_btn.setEnabled(True)
+            self.invert_btn.setEnabled(True)
+            self.download_btn.setEnabled(True)
+            self.like_checkbox.setEnabled(True)
+        except Exception:
+            pass
+        if hasattr(self, '_thread') and self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3)
+
+    def _start_fetch(self, url, cookie, fetch_mode):
+        """启动获取作品线程（url 可为单个 URL 字符串或 URL 列表）"""
         self.url_label_btn.setEnabled(False)
         self.settings_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
@@ -888,15 +914,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.progress.hide()
             self.status.setText('')
             self.append_log('[信息] 已清空上次获取的列表')
-            
-
         except Exception:
             pass
-        
-        fetch_mode = 'favorite' if self.like_checkbox.isChecked() else 'post'
+
         self._fetch_mode = fetch_mode
-        btn_text = '停止获取'
-        self.fetch_btn.setText(btn_text)
+        self.fetch_btn.setText('停止获取')
         self.fetch_btn.setEnabled(True)
         self.fetch_btn.setProperty("running", True)
         style = self.style()
@@ -907,6 +929,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.worker._fetch_stop_requested = False
         self._thread = threading.Thread(target=self.worker.fetch_tasks, args=(url, cookie, fetch_mode), daemon=True)
         self._thread.start()
+
+    def on_fetch(self):
+        """获取作品 / 停止获取"""
+        if self.fetch_btn.text() == '停止获取':
+            self._stop_fetch()
+            return
+
+        fetch_mode = self._current_fetch_mode()
+        url = self.url_edit.text().strip()
+        if not url:
+            QtWidgets.QMessageBox.warning(self, '提示', '请输入主页链接')
+            return
+        cookie = cfg.get('cookie', '')
+        if not cookie:
+            QtWidgets.QMessageBox.warning(self, '提示', '请在设置中配置 Cookie')
+            return
+
+        self._start_fetch(url, cookie, fetch_mode)
+
+    def start_batch_fetch(self, urls, fetch_mode=None):
+        """批量获取：按顺序获取已勾选用户的作品（由用户列表窗口调用）"""
+        if self.fetch_btn.text() == '停止获取':
+            self._stop_fetch()
+            return
+        if fetch_mode is None:
+            fetch_mode = self._current_fetch_mode()
+        cookie = cfg.get('cookie', '')
+        if not cookie:
+            QtWidgets.QMessageBox.warning(self, '提示', '请在设置中配置 Cookie')
+            return
+        urls = list(urls or [])
+        if not urls:
+            QtWidgets.QMessageBox.warning(self, '提示', '请先勾选要获取的用户')
+            return
+        self._start_fetch(urls, cookie, fetch_mode)
 
     def closeEvent(self, a0):
         """窗口关闭事件"""

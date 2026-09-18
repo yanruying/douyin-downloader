@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-抖音主页作品批量下载 V3.8 - 启动入口
+抖音主页作品批量下载 V3.9 - 启动入口
 作者：颜如嘤-YanRuYing
 """
 import sys

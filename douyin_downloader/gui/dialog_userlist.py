@@ -59,6 +59,7 @@ class UserListWindow(QtWidgets.QDialog):
         
         btn_layout = QtWidgets.QHBoxLayout()
         self.select_all_btn = QtWidgets.QPushButton('全选')
+        self.batch_fetch_btn = QtWidgets.QPushButton('批量获取')
         self.delete_btn = QtWidgets.QPushButton('删除')
         self.delete_btn.setStyleSheet('''
             QPushButton {
@@ -70,12 +71,14 @@ class UserListWindow(QtWidgets.QDialog):
         self.close_btn = QtWidgets.QPushButton('关闭')
         
         btn_layout.addWidget(self.select_all_btn)
+        btn_layout.addWidget(self.batch_fetch_btn)
         btn_layout.addWidget(self.delete_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(self.close_btn)
         layout.addLayout(btn_layout)
 
         self.select_all_btn.clicked.connect(self.on_select_all)
+        self.batch_fetch_btn.clicked.connect(self.on_batch_fetch)
         self.delete_btn.clicked.connect(self.on_delete)
         self.close_btn.clicked.connect(self.close)
         self.user_tree.itemSelectionChanged.connect(self.on_selection_changed)
@@ -220,6 +223,33 @@ class UserListWindow(QtWidgets.QDialog):
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, '错误', f'获取失败: {e}')
     
+    def on_batch_fetch(self):
+        """批量获取：按顺序获取所有已勾选用户的作品"""
+        urls = []
+        for i in range(self.user_tree.topLevelItemCount()):
+            item = self.user_tree.topLevelItem(i)
+            if item and item.checkState(0) == Qt.CheckState.Checked:
+                user = item.data(0, Qt.ItemDataRole.UserRole)
+                if user:
+                    original_url = user.get('url', '')
+                    sec_user_id = extract_sec_user_id_from_url(original_url)
+                    if sec_user_id:
+                        urls.append(f"https://www.douyin.com/user/{sec_user_id}")
+                    elif original_url:
+                        urls.append(original_url)
+
+        if not urls:
+            QtWidgets.QMessageBox.warning(self, '提示', '请先勾选要批量获取的用户')
+            return
+
+        main_window = self.parent()
+        if not main_window or not hasattr(main_window, 'start_batch_fetch'):
+            QtWidgets.QMessageBox.warning(self, '错误', '无法找到主窗口')
+            return
+
+        self.close()
+        main_window.start_batch_fetch(urls)
+
     def on_delete(self):
         """删除选中的用户"""
         selected_items = []

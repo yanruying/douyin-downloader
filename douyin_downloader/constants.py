@@ -4,7 +4,7 @@
 常量定义
 """
 
-TEXT_APP_NAME = "抖音主页作品批量下载 V3.8 - YanRuYing"
+TEXT_APP_NAME = "抖音主页作品批量下载 V3.9 - YanRuYing"
 
 TEXT_INFO_USER = "[信息] 抖音用户：{nickname}"
 TEXT_INFO_FETCH = "[进程] 正在获取作品数据..."
@@ -30,7 +30,7 @@ ICON_BYTES_OPTIONS = {
 
 CUSTOM_ICON_PATH = "custom_icon.png"
 
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.95 Safari/537.36'
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
 REQUEST_TIMEOUT = 12
 PAGE_COUNT_PER_REQUEST = 50
 DELAY_BETWEEN_PAGES = 0.1

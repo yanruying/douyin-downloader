@@ -23,7 +23,7 @@ class AboutWindow(QtWidgets.QDialog):
         self.about_text = QtWidgets.QTextEdit()
         self.about_text.setReadOnly(True)
         about_content = """
-抖音主页作品解析下载 V3.8
+抖音主页作品解析下载 V3.9
 
 作者:颜如嘤-YanRuYing
 
