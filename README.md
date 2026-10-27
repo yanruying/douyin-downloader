@@ -23,7 +23,6 @@
 
 ![主界面截图](https://github.com/yanruying/douyin-downloader/blob/main/1.png)
 ![设置界面](https://github.com/yanruying/douyin-downloader/blob/main/2.png)
-
 ![关于页面截图](https://github.com/yanruying/douyin-downloader/blob/main/3.png)
 
 ## 技术栈
