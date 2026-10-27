@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+
+# 本地配置与下载内容
+settings.json
+*.ini
+作品下载/
+作品数据Excel/
+视频直链/
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*

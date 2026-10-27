@@ -1,0 +1,52 @@
+[package]
+name = "douyin-downloader"
+version = "4.0.0"
+description = "抖音作品批量下载工具 — 支持主页、点赞、收藏与单作品"
+authors = ["YanRuYing"]
+license = "MIT"
+repository = "https://github.com/yanruying/douyin-downloader"
+readme = "../README.md"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "douyin_downloader_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# Tauri 的标准约定：带上这个 feature 编译时，前端资源被嵌进 exe，
+# 双击即可运行；不带时按「开发模式」去连 devUrl（localhost:1420）。
+# `tauri dev` 不带它，`tauri build` 自动带上。
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync", "time", "io-util"] }
+reqwest = { version = "0.13", features = ["json", "stream", "gzip", "brotli", "cookies"] }
+futures-util = "0.3"
+sysinfo = "0.39"
+sm3 = "0.5"
+md-5 = "0.10"
+rand = "0.9"
+regex = "1"
+chrono = "0.4"
+url = "2"
+percent-encoding = "2"
+rust_xlsxwriter = "0.101"
+thiserror = "2"
+log = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

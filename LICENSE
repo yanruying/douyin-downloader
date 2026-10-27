@@ -19,3 +19,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+第三方组件
+
+a_bogus 签名算法（src-tauri/src/douyin/sign/abogus.rs）
+源自 Johnserf-Seed/f2
+https://github.com/Johnserf-Seed/f2
+Apache License 2.0
+
+---
+
+使用限制
+
+本程序仅供学习与研究使用。
+禁止将本程序用于任何商业用途或违反法律法规的用途。

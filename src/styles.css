@@ -1,0 +1,53 @@
+/* 全局样式：只做布局与可读性，配色交给 Element Plus 默认主题。
+   旧版 QSS 的 #409EFF 色板本来就是抄 Element Plus 的，这版直接回归原生。 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+  color: #303133;
+  background: #f5f7fa;
+  overflow: hidden;
+  /* Tauri 窗口内禁止文本选中拖拽，输入区单独放开 */
+  user-select: none;
+}
+
+input,
+textarea,
+.selectable {
+  user-select: text;
+}
+
+.mono {
+  font-family: 'Cascadia Mono', 'Consolas', monospace;
+}
+
+/* 表格里的描述列允许换行，长文案不撑破 */
+.cell-wrap {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.text-muted {
+  color: #909399;
+}
+
+.text-danger {
+  color: #f56c6c;
+}
+
+.text-success {
+  color: #67c23a;
+}
