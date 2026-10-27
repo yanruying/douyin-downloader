@@ -21,6 +21,11 @@
 | 系统托盘 | 关闭时最小化到托盘，后台继续下载 |
 | 类型过滤 | 按视频/图片/实况筛选，支持全选、反选、鼠标框选 |
 
+![主界面截图](https://github.com/yanruying/douyin-downloader/blob/main/1.png)
+![设置界面](https://github.com/yanruying/douyin-downloader/blob/main/2.png)
+
+![关于页面截图](https://github.com/yanruying/douyin-downloader/blob/main/3.png)
+
 ## 技术栈
 
 - 桌面框架：Tauri 2
