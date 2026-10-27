@@ -80,7 +80,7 @@ mod tests {
         d
     }
 
-    const SEC: &str = "MS4wLjABAAAAQqfbs4o52t4QqK_at2v1Ma5tBvw5rXbCSl7HiohPmiz9XrJay21CnOplf8VTS1Kt";
+    const SEC: &str = "MS4wLjABAAAAexample_sec_uid_for_test_only";
 
     #[test]
     fn marker_uses_sec_user_id() {

@@ -3,6 +3,17 @@
 
 use serde::Deserialize;
 
+
+/// 把 JSON `null` 反序列化为 `T::default()`，用于兼容接口把列表字段写成 null 的情况。
+fn null_to_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de> + Default,
+{
+    let v = Option::<T>::deserialize(d)?;
+    Ok(v.unwrap_or_default())
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct ApiResponse<T> {
     #[serde(default)]
@@ -69,13 +80,13 @@ pub struct PostData {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct UrlList {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub url_list: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct PlayAddr {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub url_list: Vec<String>,
 }
 
@@ -89,7 +100,11 @@ pub struct BitRate {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct VideoInfo {
-    #[serde(default)]
+    /// 图集作品的顶层 `video` 常把 `bit_rate` 写成 `null`。
+    /// `#[serde(default)]` 只处理字段缺失，遇到显式 null 会报
+    /// `invalid type: null, expected a sequence` 并让整条作品解析失败，
+    /// 因此用 `null_to_default` 把 null 归一化为空列表。
+    #[serde(default, deserialize_with = "null_to_default")]
     pub bit_rate: Vec<BitRate>,
     #[serde(default)]
     pub duration: i64,
@@ -99,7 +114,7 @@ pub struct VideoInfo {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ImageInfo {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_default")]
     pub url_list: Vec<String>,
     #[serde(default)]
     pub video: Option<VideoInfo>,

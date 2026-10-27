@@ -53,7 +53,7 @@ async fn fetch_real_profile_succeeds() {
 
     // 先用一个公开的抖音官方账号做验证（不依赖用户自己的账号）
     // 公开账号示例 ID
-    let url = "https://www.douyin.com/user/MS4wLjABAAAArDVBosPJF3eIWVEFp0szuJ-e1V_-rK0ieJeWwpE77E8";
+    let url = "https://www.douyin.com/user/MS4wLjABAAAAsample_user_sec_uid_replace_with_yours";
 
     let status = client.check_cookie(&cookie).await;
     println!("cookie 状态: {status:?}");
@@ -79,7 +79,7 @@ async fn signature_accepted_by_server() {
         panic!("未找到 cookie");
     };
     let client = DouyinClient::new().unwrap();
-    let sec = "MS4wLjABAAAArDVBosPJF3eIWVEFp0szuJ-e1V_-rK0ieJeWwpE77E8";
+    let sec = "MS4wLjABAAAAsample_user_sec_uid_replace_with_yours";
     match douyin_downloader_lib::douyin::api::fetch_profile_info(&client.client, sec, &cookie).await {
         Ok(p) => println!("profile OK: {} / {}", p.nickname, p.unique_id),
         Err(e) => panic!("profile 失败: {e}"),

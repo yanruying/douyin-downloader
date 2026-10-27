@@ -340,6 +340,39 @@ mod tests {
     }
 
     #[test]
+    fn album_with_null_bit_rate_still_parses() {
+        // 列表接口返回的图集作品，顶层 video.bit_rate 为 null。
+        // 若结构体只写 #[serde(default)]，显式 null 会导致整条作品反序列化失败，
+        // 表现为「只有视频没有图集」。
+        let v = serde_json::json!({
+            "aweme_id": "7694506535757577061",
+            "desc": "图集作品",
+            "create_time": 1704153600i64,
+            "video": { "bit_rate": null, "duration": 0 },
+            "images": [
+                { "url_list": ["https://cdn/a.jpg", "https://cdn/b.jpg"] },
+                { "url_list": ["https://cdn/c.jpg"] }
+            ]
+        });
+        let rows = parse_aweme(&v, &Owner::default());
+        assert_eq!(rows.len(), 2, "图集应解析出 2 张图片，实际 {}", rows.len());
+        assert!(rows.iter().all(|r| r.kind == "image"));
+        assert_eq!(rows[0].url, "https://cdn/b.jpg");
+    }
+
+    #[test]
+    fn video_with_null_bit_rate_does_not_panic() {
+        // 视频作品若 bit_rate 为 null，应解析为空而不是崩溃
+        let v = serde_json::json!({
+            "aweme_id": "1",
+            "desc": "无码率视频",
+            "video": { "bit_rate": null, "play_addr": { "url_list": ["https://cdn/v.mp4"] } }
+        });
+        let rows = parse_aweme(&v, &Owner::default());
+        assert!(rows.is_empty(), "无码率信息时不应产出视频任务");
+    }
+
+    #[test]
     fn album_splits_static_and_live_with_exclusion() {
         let rows = parse_aweme(&album_fixture(), &Owner::default());
         // 1 张静态（取 url_list 最后一个）+ 1 张实况
