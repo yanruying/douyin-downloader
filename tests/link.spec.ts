@@ -1,18 +1,18 @@
 // 链接提取的回归测试。
 //
-// 用例全部来自用户实际粘贴的内容 —— 抖音分享出来的是「文案 + 短链 + 提示语」，
-// 直接当 URL 用会解析失败。
+// 抖音分享出来的是「文案 + 短链 + 提示语」，直接当 URL 用会解析失败。
+// 这里的文案与短链均为构造的示例值。
 
 import { describe, expect, it } from 'vitest'
 import { extractLink, validateLink } from '@/utils/link'
 
 describe('extractLink - 单作品', () => {
-  // 用户提供的真实分享文本
+  // 典型的分享文本形态
   const share =
-    '6.94 g@b.Nj :3pm tEu:/ 03/28 招血仆🩸# 克鲁鲁 # 慢摇 # 万圣节  https://v.douyin.com/ct0NrAHlEXA/ 复制此链接，打开Dou音搜索，直接观看视频！'
+    '7.43 xY@z.Ab :1ab cDe:/ 01/01 示例文案 # 标签一 # 标签二  https://v.douyin.com/SHORTCODE1/ 复制此链接，打开Dou音搜索，直接观看视频！'
 
   it('从整段分享文案里抽出短链', () => {
-    expect(extractLink(share, 'single')).toBe('https://v.douyin.com/ct0NrAHlEXA/')
+    expect(extractLink(share, 'single')).toBe('https://v.douyin.com/SHORTCODE1/')
   })
 
   it('识别 /video/ 链接', () => {
@@ -50,29 +50,29 @@ describe('extractLink - 单作品', () => {
 
 describe('extractLink - 主页 / 点赞', () => {
   const share =
-    '长按复制此条消息，打开抖音搜索，查看TA的更多作品。 https://v.douyin.com/0Q9dvwIrhGI/'
+    '长按复制此条消息，打开抖音搜索，查看TA的更多作品。 https://v.douyin.com/SHORTCODE2/'
 
   it('从分享文案里抽出短链', () => {
-    expect(extractLink(share, 'post')).toBe('https://v.douyin.com/0Q9dvwIrhGI/')
+    expect(extractLink(share, 'post')).toBe('https://v.douyin.com/SHORTCODE2/')
   })
 
   it('带 query 的主页链接保留主体、去掉 query', () => {
     const s =
-      'https://www.douyin.com/user/MS4wLjABAAAAqor8exxqvpK4gZSBdZDeFmnYX4sBxUtfTXygVNN7AaM?from_tab_name=main&vid=7700914601168757733'
+      'https://www.douyin.com/user/MS4wLjABAAAAsample_user_sec_uid_replace_with_yours?from_tab_name=main&vid=7700914601168757733'
     const got = extractLink(s, 'post')
     expect(got).toBe(
-      'https://www.douyin.com/user/MS4wLjABAAAAqor8exxqvpK4gZSBdZDeFmnYX4sBxUtfTXygVNN7AaM',
+      'https://www.douyin.com/user/MS4wLjABAAAAsample_user_sec_uid_replace_with_yours',
     )
   })
 
   it('裸 sec_uid 拼成主页链接', () => {
-    expect(extractLink('MS4wLjABAAAAqor8exxqvpK4gZSBdZDeFmnYX4sBxUtfTXygVNN7AaM', 'post')).toBe(
-      'https://www.douyin.com/user/MS4wLjABAAAAqor8exxqvpK4gZSBdZDeFmnYX4sBxUtfTXygVNN7AaM',
+    expect(extractLink('MS4wLjABAAAAsample_user_sec_uid_replace_with_yours', 'post')).toBe(
+      'https://www.douyin.com/user/MS4wLjABAAAAsample_user_sec_uid_replace_with_yours',
     )
   })
 
   it('点赞模式与主页模式规则一致', () => {
-    expect(extractLink(share, 'favorite')).toBe('https://v.douyin.com/0Q9dvwIrhGI/')
+    expect(extractLink(share, 'favorite')).toBe('https://v.douyin.com/SHORTCODE2/')
   })
 })
 

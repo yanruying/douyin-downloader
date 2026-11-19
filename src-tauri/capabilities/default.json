@@ -11,7 +11,6 @@
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "opener:default",
-    "opener:allow-open-path",
-    "fs:default"
+    "opener:allow-open-path"
   ]
 }

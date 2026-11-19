@@ -3,8 +3,8 @@
 //! 默认 `#[ignore]`（需要网络 + 有效 cookie），手动运行：
 //!   cargo test --test douyin_live -- --ignored --nocapture
 //!
-//! 目的：验证「a_bogus 签名能被抖音接受」这一唯一无法用单元测试覆盖的点。
-//! 签名算法已与 Python 版逐字节一致；本测试确认服务端也认可。
+//! 目的：验证 a_bogus 签名能被服务端接受 —— 这一点无法用单元测试覆盖。
+//! 签名算法已由 `golden_abogus` 对拍确认；本测试确认服务端同样认可。
 
 use douyin_downloader_lib::douyin::DouyinClient;
 use douyin_downloader_lib::models::FetchMode;
@@ -61,9 +61,9 @@ async fn fetch_real_profile_succeeds() {
     match client.fetch_all(url, &cookie, FetchMode::Post, || false, |_| {}, |page, list| {
         println!("第 {page} 页: {} 条", list.len());
     }).await {
-        Ok((p, list)) => {
-            println!("昵称={} unique_id={} 作品数={}", p.nickname, p.unique_id, list.len());
-            assert!(!list.is_empty(), "应至少拿到一条作品");
+        Ok((p, outcome)) => {
+            println!("昵称={} unique_id={} 作品数={}", p.nickname, p.unique_id, outcome.count);
+            assert!(outcome.count > 0, "应至少拿到一条作品");
         }
         Err(e) => {
             panic!("抓取失败（若为 status_code != 0，说明签名或指纹被拒）: {e}");

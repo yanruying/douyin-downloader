@@ -12,14 +12,10 @@ import {
   onFetchPage,
   onFetchProfile,
   onLog,
-  onProgress,
-  onSpeed,
   onWindowFocused,
 } from '@/api/events'
 import {
-  appendTasks,
   anyDownloading,
-  globalSpeed,
   modeState,
   modes,
   patchMode,
@@ -87,12 +83,11 @@ function pushLog(e: LogEvent) {
 }
 
 onMounted(async () => {
-  unlisteners.push(
-    await onSpeed((s) => {
-      globalSpeed.value = s.bytesPerSec
-    }),
-  )
-  unlisteners.push(await onLog(pushLog))
+  // 注意：fetch:page / progress / download:done 这几个事件已经在 App.vue
+  // 全局订阅并写进 store，这里不再重复订阅——重复订阅会让同一页作品
+  // 被 appendTasks 处理两次、日志被推两遍，抓几千条时是纯浪费。
+  // 本页只订阅「需要在界面上给反馈」的事件。
+  unlisteners.push(await onLog((e) => pushLog(e)))
 
   // 抓取开始就拿到用户名 → 立刻写进该页 summary，状态栏右下角立即显示
   unlisteners.push(
@@ -110,11 +105,10 @@ onMounted(async () => {
     }),
   )
 
-  // 每页到达即追加到对应模式
+  // 每页到达：App.vue 已经把数据写进 store，这里只记日志
   unlisteners.push(
     await onFetchPage((p) => {
       const m = p.mode as FetchMode
-      appendTasks(m, p.tasks)
       if (m === mode.value) {
         pushLog({ level: 'info', text: `第 ${p.page} 页：+${p.added} 个文件` })
       }
@@ -137,14 +131,6 @@ onMounted(async () => {
           setTimeout(() => tableRef.value?.selectAll(), 60)
         }
       }
-    }),
-  )
-
-  unlisteners.push(
-    await onProgress((p) => {
-      const m = p.mode as FetchMode
-      if (m !== mode.value) return
-      patchMode(m, { progress: p })
     }),
   )
 

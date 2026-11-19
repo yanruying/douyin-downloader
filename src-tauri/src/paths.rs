@@ -165,7 +165,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanitize_matches_python_rules() {
+    fn sanitize_replaces_illegal_chars() {
         assert_eq!(sanitize_filename("a/b:c*d", 150), "a_b_c_d");
         assert_eq!(sanitize_filename("  多  空格  ", 150), "多 空格");
         assert_eq!(sanitize_filename("", 150), "unknown");

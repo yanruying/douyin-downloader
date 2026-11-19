@@ -1,7 +1,7 @@
-//! 与 Python 参考实现（`scripts/gen_golden.py`）逐字节对拍的端到端验证。
+//! 与参考实现（`scripts/gen_golden.py`）逐字节对拍的端到端验证。
 //!
 //! 核心断言（`sorted_values` / `transformed` / `ab_dir` 逐项比对）放在
-//! `src/douyin/sign/abogus.rs` 的 `golden_matches_python` 单元测试里——
+//! `src/douyin/sign/abogus.rs` 的 `golden_matches_reference` 单元测试里——
 //! 那里能访问私有中间量。本文件只做公开 API 的回归防线。
 
 use douyin_downloader_lib::douyin::sign::abogus::ABogus;

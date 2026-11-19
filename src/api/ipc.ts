@@ -74,7 +74,6 @@ export const api = {
   openDownloadRoot: () => call<void>('open_download_root'),
   revealPath: (path: string) => call<void>('reveal_path', { path }),
   openPath: (path: string) => call<void>('open_path', { path }),
-  debugCookieProbe: () => call<[number, boolean, string[]]>('debug_cookie_probe'),
 }
 
 export type { DownloadSummary }

@@ -52,7 +52,9 @@ impl DouyinClient {
         api::fetch_self_profile(&self.client, cookie).await
     }
 
-    /// 抓取作品。`on_page` 每页回调一次，携带该页解析结果，前端可边抓边显示。
+    /// 抓取作品。`on_page` 每页回调一次，携带该页原始 aweme，调用方应当
+    /// **在回调里就地解析**并把需要的字段留下来——原始 JSON 用完即弃，
+    /// 否则几千条作品会把内存顶到几百 MB。
     ///
     /// `url` 为空时抓取**自己账号**——主页/点赞/收藏三种模式都支持，
     /// 因为「没填链接」的自然语义就是「看我的」。单作品模式必须给链接，
@@ -65,7 +67,7 @@ impl DouyinClient {
         should_stop: S,
         on_profile: P,
         mut on_page: F,
-    ) -> AppResult<(ProfileInfo, Vec<Value>)>
+    ) -> AppResult<(ProfileInfo, api::FetchOutcome)>
     where
         F: FnMut(u32, &[Value]),
         S: Fn() -> bool,
@@ -90,7 +92,7 @@ impl DouyinClient {
             let profile = api::profile_from_aweme(&detail);
             on_profile(&profile);
             on_page(1, std::slice::from_ref(&detail));
-            return Ok((profile, vec![detail]));
+            return Ok((profile, api::FetchOutcome::done(1)));
         }
 
         // 收藏接口仅支持当前登录账号（他人 sec_uid 一律返回 3002279，
@@ -127,13 +129,9 @@ impl DouyinClient {
         // 这样抓取过程中底部状态栏就能显示「正在获取 某某 的作品」
         on_profile(&profile);
 
-        let ctx = api::FetchCtx {
-            client: self.client.clone(),
-            sim: self.sim.clone(),
-            cookie: cookie.to_string(),
-        };
-        let list = ctx.fetch_all(&sec, mode, should_stop, on_page).await?;
-        Ok((profile, list))
+        let ctx = api::FetchCtx::new(self.client.clone(), self.sim.clone(), cookie.to_string());
+        let outcome = ctx.fetch_all(&sec, mode, should_stop, on_page).await?;
+        Ok((profile, outcome))
     }
 
     /// 一次性拿全部作品（不含增量回调）。
@@ -142,7 +140,7 @@ impl DouyinClient {
         url: &str,
         cookie: &str,
         mode: FetchMode,
-    ) -> AppResult<(ProfileInfo, Vec<Value>)> {
+    ) -> AppResult<(ProfileInfo, api::FetchOutcome)> {
         self.fetch_all(url, cookie, mode, || false, |_| {}, |_, _| {}).await
     }
 

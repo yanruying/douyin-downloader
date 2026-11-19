@@ -6,9 +6,12 @@
 //   - Ctrl+A 全选（表格未聚焦时也生效）
 //   - 鼠标框选：按住左键拖拽划过行即选中
 //
-// 框选实现说明：el-table 没有内置框选，这里在滚动容器上监听
-// mousedown/mousemove，用行元素自带的 row-key 计算命中集合。
-// 拖拽期间禁用文本选择，避免选出一片蓝色文字。
+// 选中状态自己维护成 Set<string>，不走 el-table 内置 selection：
+// 内置方案要对每一行调用 toggleRowSelection，几千行时全选/框选
+// 每次鼠标移动都会触发上千次组件更新，界面直接卡死。
+//
+// 渲染也做窗口化：默认只渲染前 RENDER_STEP 行，滚到底部再追加。
+// 几千行 DOM 一次性铺出来同样会卡住，而列表本身还在继续增量到达。
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { TaskRow, TaskKind } from '@/types/models'
@@ -23,13 +26,28 @@ const emit = defineEmits<{
   'update:selected': [ids: string[]]
 }>()
 
-const tableRef = ref()
 const wrapRef = ref<HTMLElement>()
 const typeFilter = ref<TaskKind[]>(['video', 'image', 'live'])
-const selected = ref<TaskRow[]>([])
+
+/** 选中集合。整体替换而不是原地改，才能被 Vue 追踪。 */
+const selected = ref<Set<string>>(new Set())
+
+/** 已渲染行数窗口 */
+const RENDER_STEP = 150
+const renderLimit = ref(RENDER_STEP)
 
 const visibleRows = computed(() => props.rows.filter((r) => typeFilter.value.includes(r.kind)))
-const visibleIds = computed(() => new Set(visibleRows.value.map((r) => r.id)))
+const renderedRows = computed(() => visibleRows.value.slice(0, renderLimit.value))
+
+const allSelected = computed(() => {
+  const n = visibleRows.value.length
+  if (n === 0) return false
+  // 先比数量：选中数少于可见行数时不可能全选，直接跳过 O(n) 遍历。
+  // 拖拽框选时 selected 每次 mousemove 都变，几千行下这个短路很重要。
+  if (selected.value.size < n) return false
+  return visibleRows.value.every((r) => selected.value.has(r.id))
+})
+const someSelected = computed(() => !allSelected.value && selected.value.size > 0)
 
 const kindTag = (k: TaskKind) =>
   ({ video: 'primary', image: 'success', live: 'warning' })[k] as
@@ -38,35 +56,43 @@ const kindTag = (k: TaskKind) =>
     | 'warning'
 
 function emitSelected() {
-  emit('update:selected', selected.value.map((r) => r.id))
+  emit('update:selected', [...selected.value])
 }
 
-/** 以表格自身 selection 事件为唯一真相 */
-function onSelectionChange(rows: TaskRow[]) {
-  // 过滤后不可见的行不应留在选择里，否则下载会带上用户看不到的作品
-  selected.value = rows.filter((r) => visibleIds.value.has(r.id))
+function commit(next: Set<string>) {
+  selected.value = next
   emitSelected()
+}
+
+function toggle(id: string, on: boolean) {
+  const next = new Set(selected.value)
+  if (on) next.add(id)
+  else next.delete(id)
+  commit(next)
+}
+
+function toggleAll() {
+  if (allSelected.value) {
+    commit(new Set())
+    return
+  }
+  commit(new Set(visibleRows.value.map((r) => r.id)))
 }
 
 function selectAll() {
-  tableRef.value?.clearSelection()
-  const all = visibleRows.value
-  if (!all.length) return
-  all.forEach((row) => tableRef.value?.toggleRowSelection(row, true))
+  commit(new Set(visibleRows.value.map((r) => r.id)))
 }
 
 function invert() {
-  const cur = new Set(selected.value.map((r) => r.id))
-  tableRef.value?.clearSelection()
-  visibleRows.value
-    .filter((r) => !cur.has(r.id))
-    .forEach((row) => tableRef.value?.toggleRowSelection(row, true))
+  const next = new Set<string>()
+  for (const r of visibleRows.value) {
+    if (!selected.value.has(r.id)) next.add(r.id)
+  }
+  commit(next)
 }
 
 function clearSelection() {
-  tableRef.value?.clearSelection()
-  selected.value = []
-  emitSelected()
+  commit(new Set())
 }
 
 // ---------------- Ctrl+A 全选 ----------------
@@ -133,7 +159,7 @@ function onMouseDown(e: MouseEvent) {
   dragging.value = true
   dragStartY.value = e.clientY
   // Ctrl 拖拽 = 在原选择上追加；否则从这次拖拽重新开始
-  dragBase = e.ctrlKey || e.metaKey ? new Set(selected.value.map((r) => r.id)) : new Set()
+  dragBase = e.ctrlKey || e.metaKey ? new Set(selected.value) : new Set()
   applyDrag(e.clientY)
   document.body.style.userSelect = 'none'
 }
@@ -142,17 +168,15 @@ function applyDrag(clientY: number) {
   const [first, last] = rowRange(dragStartY.value, clientY)
   if (first < 0) return
 
-  // DOM 行序与 visibleRows 一一对应（el-table 按 :data 顺序渲染）
+  // DOM 行序与 renderedRows 一一对应（el-table 按 :data 顺序渲染）
   const next = new Set(dragBase)
   for (let i = first; i <= last; i++) {
-    const row = visibleRows.value[i]
+    const row = renderedRows.value[i]
     if (row) next.add(row.id)
   }
-
-  tableRef.value?.clearSelection()
-  visibleRows.value
-    .filter((row) => next.has(row.id))
-    .forEach((row) => tableRef.value?.toggleRowSelection(row, true))
+  // 拖拽过程中不 emit：一次拖拽会触发几十次 mousemove，
+  // 每次都往上抛会让父组件的选择计数持续重渲染。
+  selected.value = next
 }
 
 function onMouseMove(e: MouseEvent) {
@@ -165,39 +189,61 @@ function onMouseUp() {
   if (!dragging.value) return
   dragging.value = false
   document.body.style.userSelect = ''
+  emitSelected()
 }
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  // 滚到底部附近就追加一批行
+  const body = wrapRef.value?.querySelector<HTMLElement>('.el-scrollbar__wrap')
+  body?.addEventListener('scroll', onScroll, { passive: true })
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  const body = wrapRef.value?.querySelector<HTMLElement>('.el-scrollbar__wrap')
+  body?.removeEventListener('scroll', onScroll)
   document.body.style.userSelect = ''
 })
 
+function onScroll(e: Event) {
+  const el = e.target as HTMLElement
+  if (!el) return
+  // 距底部不足 300px 再追加，避免滚动时反复触发
+  if (el.scrollTop + el.clientHeight < el.scrollHeight - 300) return
+  if (renderLimit.value >= visibleRows.value.length) return
+  renderLimit.value = Math.min(visibleRows.value.length, renderLimit.value + RENDER_STEP)
+}
+
 // 过滤变化：把不可见行移出选择
 watch(typeFilter, () => {
-  const kept = selected.value.filter((r) => visibleIds.value.has(r.id))
-  if (kept.length === selected.value.length) return
-  tableRef.value?.clearSelection()
-  kept.forEach((r) => tableRef.value?.toggleRowSelection(r, true))
-  selected.value = kept
-  emitSelected()
+  if (!selected.value.size) return
+  const keep = new Set(visibleRows.value.map((r) => r.id))
+  const kept = new Set([...selected.value].filter((id) => keep.has(id)))
+  if (kept.size === selected.value.size) return
+  commit(kept)
 })
 
-// 数据被整体替换（重新抓取/清空）时复位选择
+// 数据被整体替换（重新抓取/清空）时复位选择与渲染窗口
 watch(
   () => props.rows,
   () => {
-    selected.value = []
-    emitSelected()
+    if (selected.value.size) commit(new Set())
+    renderLimit.value = RENDER_STEP
   },
 )
+
+// 类型过滤把行数压到窗口以内时，把窗口收回初始值，
+// 否则切回全类型会一次性铺出之前累积的渲染量
+watch(visibleRows, (rows) => {
+  if (renderLimit.value > RENDER_STEP && rows.length < renderLimit.value) {
+    renderLimit.value = Math.max(RENDER_STEP, Math.min(rows.length, renderLimit.value))
+  }
+})
 
 defineExpose({ selectAll, invert, clearSelection })
 </script>
@@ -205,17 +251,33 @@ defineExpose({ selectAll, invert, clearSelection })
 <template>
   <div ref="wrapRef" class="table-wrap" @mousedown="onMouseDown">
     <el-table
-      ref="tableRef"
-      :data="visibleRows"
+      :data="renderedRows"
       height="100%"
       size="small"
       border
       stripe
       row-key="id"
       :empty-text="rows.length ? '当前类型过滤下没有作品' : '还没有作品，先获取一次'"
-      @selection-change="onSelectionChange"
     >
-      <el-table-column type="selection" width="52" :selectable="() => !disabled" />
+      <!-- 自建复选框列：不用 type="selection"。
+           内置 selection 需要逐行 toggleRowSelection，几千行时全选会卡死。 -->
+      <el-table-column width="52" align="center">
+        <template #header>
+          <el-checkbox
+            :model-value="allSelected"
+            :indeterminate="someSelected"
+            :disabled="disabled"
+            @change="toggleAll"
+          />
+        </template>
+        <template #default="{ row }">
+          <el-checkbox
+            :model-value="selected.has(row.id)"
+            :disabled="disabled"
+            @change="(v: any) => toggle(row.id, !!v)"
+          />
+        </template>
+      </el-table-column>
       <el-table-column label="#" type="index" width="52" align="center" />
       <el-table-column prop="date" label="发布日期" width="100" align="center" />
       <el-table-column prop="desc" label="描述" min-width="280">

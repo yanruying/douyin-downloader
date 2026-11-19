@@ -3,6 +3,9 @@ node_modules/
 dist/
 src-tauri/target/
 
+# Tauri 构建时自动生成的权限 schema
+src-tauri/gen/schemas/
+
 # 本地配置与下载内容
 settings.json
 *.ini

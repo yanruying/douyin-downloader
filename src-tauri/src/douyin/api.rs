@@ -21,6 +21,23 @@ pub const PAGE_COUNT: u32 = 50;
 /// 收藏接口的硬上限：超过 20 会被服务端拒绝（status_code=5）。
 pub const COLLECT_PAGE_COUNT: u32 = 20;
 
+/// 单个模式最多翻多少页，防止服务端游标异常时无限翻页。
+/// 50 条/页 × 2000 页 = 10 万条，远超正常账号规模。
+pub const MAX_PAGES: u32 = 2000;
+
+/// 同一页遇到风控时最多重试几次。
+///
+/// 几千条的大列表至少要翻几十页，中途任意一页踩到限流就会丢掉后面全部内容。
+/// 抖音的限流码（2150/3002279）通常一两分钟自行解除，所以退避要够长；
+/// 同时设上限，避免用户面对一个永久转圈的界面。
+pub const MAX_PAGE_RETRIES: u32 = 5;
+
+/// 第 n 次风控重试的等待时长：5s、10s、20s、40s、60s。
+fn retry_backoff(attempt: u32) -> Duration {
+    let secs = 5u64.saturating_mul(1u64 << (attempt.saturating_sub(1).min(4)));
+    Duration::from_secs(secs.min(60))
+}
+
 /// 所有会被抖音风控盯上的固定参数。
 pub struct RequestProfile;
 
@@ -392,6 +409,52 @@ pub struct FetchCtx {
     pub client: Client,
     pub sim: Arc<dyn SignatureProvider>,
     pub cookie: String,
+    /// 覆盖接口域名。仅供测试把请求指向本地 mock 服务。
+    #[doc(hidden)]
+    pub base_override: Option<String>,
+}
+
+impl FetchCtx {
+    /// 生产路径的构造器。
+    pub fn new(client: Client, sim: Arc<dyn SignatureProvider>, cookie: String) -> Self {
+        Self {
+            client,
+            sim,
+            cookie,
+            base_override: None,
+        }
+    }
+
+    fn endpoint(&self, path: &str) -> String {
+        match &self.base_override {
+            Some(base) => format!("{base}{path}"),
+            None => format!("https://www.douyin.com{path}"),
+        }
+    }
+}
+
+/// 分页结果。
+///
+/// 不再携带原始 aweme JSON：几千条作品的原始响应（每条含多套 bit_rate 与
+/// url_list）会占到几十上百 MB，而调用方只需要解析后的扁平结果。每页解析完
+/// 就把原始 JSON 丢掉，抓取期间内存占用保持平稳。
+#[derive(Debug)]
+pub struct FetchOutcome {
+    /// 抓到的原始 aweme 条数
+    pub count: u32,
+    pub warning: Option<String>,
+    /// 用户主动停止
+    pub stopped: bool,
+}
+
+impl FetchOutcome {
+    pub fn done(count: u32) -> Self {
+        Self {
+            count,
+            warning: None,
+            stopped: false,
+        }
+    }
 }
 
 impl FetchCtx {
@@ -401,7 +464,7 @@ impl FetchCtx {
         mode: FetchMode,
         mut should_stop: S,
         mut on_page: F,
-    ) -> AppResult<Vec<Value>>
+    ) -> AppResult<FetchOutcome>
     where
         F: FnMut(u32, &[Value]),
         S: FnMut() -> bool,
@@ -411,25 +474,39 @@ impl FetchCtx {
             return self.fetch_collect(sec_user_id, should_stop, on_page).await;
         }
 
-        let mut all: Vec<Value> = Vec::new();
+        let mut count = 0u32;
         let mut page = 1u32;
         let mut max_cursor = 0i64;
         // 每页最多重试一次的计数器（风控退避用）
         let mut page_retry = 0u32;
+        // 中途失败的说明；非空表示「没抓全但不是全丢」
+        let mut warning: Option<String> = None;
+        let mut stopped = false;
+        // 去掉 has_more 之后，用「作品 id 是否全是新的」判断是否到底
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut repeat_pages = 0u32;
+        // 连续空页计数：单页空不终止
+        let mut empty_pages = 0u32;
+        // 记录走过的游标值：服务端在列表尾部会让游标归零重放，
+        // 只靠「不前进」拦不住，必须认出「这个游标我已经来过」。
+        let mut visited_cursors: std::collections::HashSet<i64> =
+            std::collections::HashSet::from([0i64]);
 
-        let (base, params_fn): (&str, fn(&str, i64, u32) -> Vec<(String, String)>) = match mode {
+        let (path, params_fn): (&str, fn(&str, i64, u32) -> Vec<(String, String)>) = match mode {
             FetchMode::Favorite => (
-                "https://www.douyin.com/aweme/v1/web/aweme/favorite/",
+                "/aweme/v1/web/aweme/favorite/",
                 RequestProfile::favorite_params,
             ),
             _ => (
-                "https://www.douyin.com/aweme/v1/web/aweme/post/",
+                "/aweme/v1/web/aweme/post/",
                 |sec: &str, cur: i64, cnt: u32| RequestProfile::post_params(sec, cur, cnt, cur == 0),
             ),
         };
+        let base = self.endpoint(path);
 
         loop {
             if should_stop() {
+                stopped = true;
                 break;
             }
             let params = params_fn(sec_user_id, max_cursor, PAGE_COUNT);
@@ -438,54 +515,152 @@ impl FetchCtx {
             let url = format!("{base}?{signed}");
 
             let started = Instant::now();
-            let text = get_text(&self.client, &url, &self.cookie, "https://www.douyin.com/").await?;
 
-            let resp: crate::douyin::model::ApiResponse<PostData> =
-                serde_json::from_str(&text).map_err(|e| {
-                    AppError::msg(format!("第 {page} 页解析失败: {e}（Cookie 或签名可能失效）"))
-                })?;
+            // 单页失败不再整体中止：已经到手的页比一个错误码有价值得多。
+            // 抓到一半遇到风控/网络抖动时，用户至少能下载已有部分。
+            let page_result = async {
+                let text =
+                    get_text(&self.client, &url, &self.cookie, "https://www.douyin.com/").await?;
+                let resp: crate::douyin::model::ApiResponse<PostData> =
+                    serde_json::from_str(&text).map_err(|e| {
+                        AppError::msg(format!("第 {page} 页解析失败: {e}（Cookie 或签名可能失效）"))
+                    })?;
+                Ok::<_, AppError>(resp)
+            }
+            .await;
+
+            let resp = match page_result {
+                Ok(r) => r,
+                Err(e) => {
+                    if count == 0 {
+                        // 第一页就失败：没有可保留的数据，如实报错。
+                        // 这里不退避重试——cookie 失效/签名失效都要用户自己处理，
+                        // 让界面多转十几秒再报同样的错只会更难排查。
+                        return Err(e);
+                    }
+                    // 中途失败多半是响应被截断或限流，重试同一页通常能过去。
+                    if page_retry < MAX_PAGE_RETRIES {
+                        page_retry += 1;
+                        tokio::time::sleep(retry_backoff(page_retry)).await;
+                        continue;
+                    }
+                    warning = Some(format!("第 {page} 页中断（{e}），已保留前 {}", page - 1));
+                    break;
+                }
+            };
 
             if resp.status_code != 0 {
                 let msg = resp.status_msg.clone().unwrap_or_default();
                 let hint = describe_code(resp.status_code);
-                // 风控类错误：给一次短退避后重试同一页，成功就当无事发生。
-                // 直接报错只会让用户狂点，反而拖长风控时间。
-                if is_rate_limited(resp.status_code) && page_retry == 0 {
+                // 风控类错误：退避后重试同一页，成功就当无事发生。
+                // 直接报错只会让用户狂点，反而拖长风控时间；而只重试一次
+                // 在几千条的大列表上不够用——中途任意一页踩到限流就会丢掉后面全部。
+                if is_rate_limited(resp.status_code) && page_retry < MAX_PAGE_RETRIES {
                     page_retry += 1;
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(retry_backoff(page_retry)).await;
                     continue;
                 }
-                return Err(AppError::msg(format!(
-                    "第 {page} 页{msg_hint}",
-                    msg_hint = if msg.is_empty() {
-                        hint
-                    } else {
-                        format!("{hint}（{msg}）")
-                    }
-                )));
+                let detail = if msg.is_empty() {
+                    hint
+                } else {
+                    format!("{hint}（{msg}）")
+                };
+                if count == 0 {
+                    return Err(AppError::msg(format!("第 {page} 页{detail}")));
+                }
+                warning = Some(format!("第 {page} 页中断（{detail}），已保留前 {}", page - 1));
+                break;
             }
             page_retry = 0;
 
             let list = resp.data.aweme_list.unwrap_or_default();
-            if list.is_empty() {
-                break;
+            // 空页不等于到底。
+            //
+            // 服务端在分片边界、限流、AB 桶切换时都可能吐一次空页，随后继续
+            // 返回数据。把空页当终止条件会让几千条的作品只落下一百多条。
+            // 空页只表示「这一页没东西」，继续翻即可；真正的到底由游标判定
+            // （不前进 / 归零后重来 / 兜底重复计数）。
+            let empty_page = list.is_empty();
+            // 既然不靠 has_more 收尾，就得自己判断「服务端在重复喂同一批」：
+            // 游标一路前进但作品 id 全是见过的，说明已经到底了。
+            let fresh = list
+                .iter()
+                .filter(|v| {
+                    v.get("aweme_id")
+                        .and_then(|x| x.as_str())
+                        .map(|id| !seen_ids.contains(id))
+                        .unwrap_or(true)
+                })
+                .count();
+            for v in &list {
+                if let Some(id) = v.get("aweme_id").and_then(|x| x.as_str()) {
+                    seen_ids.insert(id.to_string());
+                }
             }
-            on_page(page, &list);
-            all.extend(list.iter().cloned());
+            if !empty_page {
+                count += fresh as u32;
+                on_page(page, &list);
+            }
+            // 原始 JSON 到此为止：回调已经把需要的数据取走，立即释放
+            drop(list);
 
+            if empty_page {
+                empty_pages += 1;
+                // 连续五页都是空页才认作到底：单页空在分片边界上很常见，
+                // 一页空就停会截断结果。
+                if empty_pages >= 5 {
+                    break;
+                }
+            } else {
+                empty_pages = 0;
+                if fresh == 0 {
+                    repeat_pages += 1;
+                    // 连续三页全无新内容：游标在推进但数据没变，已经到底
+                    if repeat_pages >= 3 {
+                        break;
+                    }
+                } else {
+                    repeat_pages = 0;
+                }
+            }
+
+            let prev_cursor = max_cursor;
             max_cursor = resp.data.max_cursor.unwrap_or(0);
-            let has_more = resp.data.has_more.unwrap_or(0) == 1;
+            let has_more = resp.data.has_more;
             page += 1;
 
             let elapsed = started.elapsed().as_secs_f64();
             let delay = (elapsed * 0.5).clamp(0.1, 1.0);
             tokio::time::sleep(Duration::from_secs_f64(delay)).await;
 
-            if !has_more {
+            // has_more 只作为提示，不当作终止条件。
+            //
+            // 服务端在数据量大时会中途抛出 has_more=0（限流、分片、A/B 桶都可能），
+            // 一旦据此 break，几千个作品只落几百个就停。
+            let _ = has_more;
+            // 游标不前进时必须停：否则同一页会被无限重复抓取，
+            // 表现是「越抓越慢、内存一直涨，作品数却不再增加」。
+            if max_cursor == prev_cursor {
+                break;
+            }
+            // 游标绕圈：服务端在列表尾部会让游标归零并从第一页重放，
+            // 只靠「不前进」拦不住，必须认出「这个游标我已经来过」。
+            if !visited_cursors.insert(max_cursor) {
+                break;
+            }
+            // 安全阀：游标一路前进但服务端始终非空时，避免无限翻页。
+            if page > MAX_PAGES {
+                warning = Some(format!(
+                    "已翻到 {MAX_PAGES} 页并主动停止，结果可能不完整"
+                ));
                 break;
             }
         }
-        Ok(all)
+        Ok(FetchOutcome {
+            count,
+            warning,
+            stopped,
+        })
     }
 
     /// 收藏夹：POST，分页参数在 body。
@@ -494,48 +669,80 @@ impl FetchCtx {
         sec_user_id: &str,
         mut should_stop: S,
         mut on_page: F,
-    ) -> AppResult<Vec<Value>>
+    ) -> AppResult<FetchOutcome>
     where
         F: FnMut(u32, &[Value]),
         S: FnMut() -> bool,
     {
-        const BASE: &str = "https://www.douyin.com/aweme/v1/web/aweme/listcollection/";
-        let mut all: Vec<Value> = Vec::new();
+        let base = self.endpoint("/aweme/v1/web/aweme/listcollection/");
+        let mut count = 0u32;
         let mut page = 1u32;
         let mut cursor = 0i64;
         let mut page_retry = 0u32;
+        let mut warning: Option<String> = None;
+        let mut stopped = false;
+        // 同主页路径：用「本页是否有新 id」判断到底
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut repeat_pages = 0u32;
+        // 连续空页计数：单页空不终止
+        let mut empty_pages = 0u32;
+        // 记录走过的游标值：列表尾部服务端会让游标归零重放
+        let mut visited_cursors: std::collections::HashSet<i64> =
+            std::collections::HashSet::from([0i64]);
 
         loop {
             if should_stop() {
+                stopped = true;
                 break;
             }
             let qs = urlencode(&RequestProfile::collect_query(sec_user_id));
             let body = RequestProfile::collect_body(PAGE_COUNT, cursor);
             // 签名时传入 body：收藏接口会校验 body 的 a_bogus
             let (signed, _) = self.sim.sign(&qs, &body);
-            let url = format!("{BASE}?{signed}");
+            let url = format!("{base}?{signed}");
 
-            let resp = self
-                .client
-                .post(&url)
-                .header("Cookie", &self.cookie)
-                .header("Referer", "https://www.douyin.com/")
-                .header("x-tt-argus", "1")
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .body(body)
-                .send()
-                .await
-                .map_err(AppError::from)?;
+            // 同主页路径：单页失败保住已抓到的页
+            let page_result = async {
+                let resp = self
+                    .client
+                    .post(&url)
+                    .header("Cookie", &self.cookie)
+                    .header("Referer", "https://www.douyin.com/")
+                    .header("x-tt-argus", "1")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(AppError::from)?;
 
-            if !resp.status().is_success() {
-                return Err(AppError::msg(format!(
-                    "收藏列表请求失败 HTTP {}",
-                    resp.status()
-                )));
+                if !resp.status().is_success() {
+                    return Err(AppError::msg(format!(
+                        "收藏列表请求失败 HTTP {}",
+                        resp.status()
+                    )));
+                }
+                let text = resp.text().await.map_err(AppError::from)?;
+                let root: Value = serde_json::from_str(&text)
+                    .map_err(|e| AppError::msg(format!("收藏列表解析失败: {e}")))?;
+                Ok::<_, AppError>(root)
             }
-            let text = resp.text().await.map_err(AppError::from)?;
-            let root: Value = serde_json::from_str(&text)
-                .map_err(|e| AppError::msg(format!("收藏列表解析失败: {e}")))?;
+            .await;
+
+            let root = match page_result {
+                Ok(r) => r,
+                Err(e) => {
+                    if count == 0 {
+                        return Err(e);
+                    }
+                    if page_retry < MAX_PAGE_RETRIES {
+                        page_retry += 1;
+                        tokio::time::sleep(retry_backoff(page_retry)).await;
+                        continue;
+                    }
+                    warning = Some(format!("第 {page} 页中断（{e}），已保留前 {}", page - 1));
+                    break;
+                }
+            };
 
             let code = root.get("status_code").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -552,49 +759,111 @@ impl FetchCtx {
                 if code == 5 {
                     break;
                 }
-                // 风控：退避一次再试，避免用户看到吓人的长码
-                if is_rate_limited(code) && page_retry == 0 {
+                // 3002279 在收藏接口上恒表示「请求的不是本人账号」，
+                // 是永久性错误，必须在退避重试之前判断：
+                // 它的数值同时又满足 is_rate_limited，若放到后面，
+                // 用户会白白等满 5+10+20+40+60 秒才看到真正的提示。
+                if code == 3002279 {
+                    let e = AppError::msg(
+                        "收藏作品只能获取当前登录账号的收藏。请留空链接直接获取，或先登录该账号",
+                    );
+                    if count == 0 {
+                        return Err(e);
+                    }
+                    warning = Some(format!("第 {page} 页中断（{e}），已保留前 {}", page - 1));
+                    break;
+                }
+                // 风控：退避后重试，避免用户看到吓人的长码。
+                // 大列表上单次重试不够，会把后面几千条全丢掉。
+                if is_rate_limited(code) && page_retry < MAX_PAGE_RETRIES {
                     page_retry += 1;
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(retry_backoff(page_retry)).await;
                     continue;
                 }
-                // 3002279 在收藏接口上恒等于「不是自己的账号」，
-                // 该码在此接口上恒表示「非本人账号」，冷却重试无效
-                if code == 3002279 {
-                    return Err(AppError::msg(
-                        "收藏作品只能获取当前登录账号的收藏。请留空链接直接获取，或先登录该账号",
-                    ));
+                let detail = describe_code(code);
+                if count == 0 {
+                    return Err(AppError::msg(detail));
                 }
-                return Err(AppError::msg(describe_code(code)));
+                warning = Some(format!("第 {page} 页中断（{detail}），已保留前 {}", page - 1));
+                break;
             }
             page_retry = 0;
             if code != 0 {
                 log_status_once(code);
             }
 
-            if list.is_empty() {
-                break;
+            let list_was_empty = list.is_empty();
+            if list_was_empty {
+                // 空页不等于到底（同主页路径）：单页空要能继续翻。
+                empty_pages += 1;
+                if empty_pages >= 5 {
+                    break;
+                }
+            } else {
+                empty_pages = 0;
             }
-            on_page(page, &list);
-            all.extend(list.iter().cloned());
+            // 与主页路径同规则：游标在前进但内容全是见过的 id，说明已到底
+            let fresh = list
+                .iter()
+                .filter(|v| {
+                    v.get("aweme_id")
+                        .and_then(|x| x.as_str())
+                        .map(|id| !seen_ids.contains(id))
+                        .unwrap_or(true)
+                })
+                .count();
+            for v in &list {
+                if let Some(id) = v.get("aweme_id").and_then(|x| x.as_str()) {
+                    seen_ids.insert(id.to_string());
+                }
+            }
+            if !list.is_empty() {
+                count += fresh as u32;
+                on_page(page, &list);
+            }
+            drop(list);
 
-            let has_more = root.get("has_more").and_then(|v| v.as_i64()).unwrap_or(0) == 1;
-            let next = root
-                .get("cursor")
-                .and_then(|v| v.as_i64())
-                .or_else(|| root.get("max_cursor").and_then(|v| v.as_i64()))
+            if fresh == 0 && !list_was_empty {
+                repeat_pages += 1;
+                if repeat_pages >= 3 {
+                    break;
+                }
+            } else if !list_was_empty {
+                repeat_pages = 0;
+            }
+
+            let has_more = lenient_field_bool(root.get("has_more"));
+            let next = lenient_field_i64(root.get("cursor"))
+                .or_else(|| lenient_field_i64(root.get("max_cursor")))
                 .unwrap_or(cursor);
 
+            // 同主页路径：has_more 不作为终止条件，只看游标是否前进。
+            // 收藏接口在数据量大时会提前给出 has_more=0，据此 break 会少抓一大半。
+            let _ = has_more;
             // cursor 不前进时必须停：否则同一页会被无限重复抓取
-            if !has_more || next == cursor {
+            if next == cursor {
+                break;
+            }
+            // 游标绕圈：列表尾部归零重放时必须认出已来过的游标
+            if !visited_cursors.insert(next) {
                 break;
             }
             cursor = next;
             page += 1;
+            if page > MAX_PAGES {
+                warning = Some(format!(
+                    "已翻到 {MAX_PAGES} 页并主动停止，结果可能不完整"
+                ));
+                break;
+            }
 
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        Ok(all)
+        Ok(FetchOutcome {
+            count,
+            warning,
+            stopped,
+        })
     }
 }
 
@@ -604,6 +873,38 @@ fn log_status_once(code: i64) {
     static LAST: AtomicI64 = AtomicI64::new(i64::MIN);
     if LAST.swap(code, Ordering::Relaxed) != code {
         eprintln!("[douyin] 收藏列表返回非零业务码 {code}，已按部分数据继续");
+    }
+}
+
+/// 把 JSON 值宽松地读成 bool。
+///
+/// 接口在不同版本里用 `1/0`、`true/false`、`"1"/"true"` 表达同一个开关。
+/// 收藏路径直接操作 `serde_json::Value`，这里补上与结构体侧一致的解释规则。
+fn lenient_field_bool(v: Option<&Value>) -> bool {
+    match v {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_i64().unwrap_or(0) != 0,
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
+        }
+        _ => false,
+    }
+}
+
+/// 把 JSON 值宽松地读成 i64（游标可能是数字或字符串）。
+fn lenient_field_i64(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return None;
+            }
+            t.parse::<i64>().ok().or_else(|| t.parse::<f64>().ok().map(|f| f as i64))
+        }
+        _ => None,
     }
 }
 
@@ -669,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn urlencode_matches_python_semantics() {
+    fn urlencode_keeps_key_value_pairs() {
         let p = vec![
             ("a".to_string(), "1".to_string()),
             ("sec_user_id".to_string(), "MS4wLjABAAA_-x".to_string()),
@@ -679,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn urlencode_escapes_like_python_quote_plus() {
+    fn urlencode_escapes_like_quote_plus() {
         let p = vec![
             ("k".to_string(), "中文 空格".to_string()),
             ("q".to_string(), "a&b=c".to_string()),

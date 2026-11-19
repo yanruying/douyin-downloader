@@ -1,7 +1,7 @@
 {
   "name": "douyin-downloader",
   "private": true,
-  "version": "4.0.0",
+  "version": "4.0.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,6 @@
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2",
-    "@tauri-apps/plugin-opener": "^2",
     "element-plus": "^2.14.7",
     "vue": "^3.5.44",
     "vue-router": "^4.6.4",

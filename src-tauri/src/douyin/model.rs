@@ -14,6 +14,68 @@ where
     Ok(v.unwrap_or_default())
 }
 
+/// 宽松布尔：接口在不同版本里用 `1/0`、`true/false`、`"1"/"true"` 表示同一个开关。
+///
+/// 只按数字解析时，字符串形态会让整页结构体反序列化失败——一页都拿不到，
+/// 而调用方只看到「解析失败」。这里把三种形态归一，未知值按 false（保守：当作没有更多）。
+fn lenient_bool<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Bool(bool),
+        Int(i64),
+        Float(f64),
+        Str(String),
+    }
+
+    let v = Option::<Raw>::deserialize(d)?;
+    Ok(match v {
+        None => false,
+        Some(Raw::Bool(b)) => b,
+        Some(Raw::Int(i)) => i != 0,
+        Some(Raw::Float(f)) => f != 0.0,
+        Some(Raw::Str(s)) => {
+            let t = s.trim();
+            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
+        }
+    })
+}
+
+/// 宽松整数：游标在不同版本里可能是数字，也可能是字符串。
+///
+/// 直接写 `Option<i64>` 时，字符串游标会让整个响应解析失败，
+/// 表现为「抓几十页后突然报解析失败」。
+fn lenient_i64<'de, D>(d: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Int(i64),
+        Float(f64),
+        Str(String),
+    }
+
+    let v = Option::<Raw>::deserialize(d)?;
+    Ok(match v {
+        None => None,
+        Some(Raw::Int(i)) => Some(i),
+        Some(Raw::Float(f)) => Some(f as i64),
+        Some(Raw::Str(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                t.parse::<i64>().ok().or_else(|| t.parse::<f64>().ok().map(|f| f as i64))
+            }
+        }
+    })
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct ApiResponse<T> {
     #[serde(default)]
@@ -72,10 +134,10 @@ impl ProfileUser {
 pub struct PostData {
     #[serde(default)]
     pub aweme_list: Option<Vec<serde_json::Value>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub max_cursor: Option<i64>,
-    #[serde(default)]
-    pub has_more: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_bool")]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]

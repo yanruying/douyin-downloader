@@ -71,11 +71,20 @@ cargo test
 pnpm test
 ```
 
-需要联网与有效 Cookie 的集成测试默认跳过，手动执行：
+需要联网与有效 Cookie 的集成测试默认跳过，手动执行。程序按顺序查找 `settings.json`：可执行文件同级目录、其上一级、`文档/DouyinDownloader`、环境变量 `SETTINGS_JSON` 指向的路径、当前工作目录。
 
 ```bash
 cargo test --test douyin_live -- --ignored --nocapture
 cargo test --test self_fetch_live -- --ignored --nocapture
+# 大列表分页：验证几千条作品能翻到底
+cargo test --test fetch_large_live -- --ignored --nocapture
+```
+
+签名对拍用的 `src-tauri/tests/golden_abogus.json` 由脚本生成，改动签名实现后可重新生成并比对：
+
+```bash
+pip install f2 gmssl
+python scripts/gen_golden.py src-tauri/tests/golden_abogus.json
 ```
 
 ## 使用方法
@@ -173,6 +182,8 @@ cargo test --test self_fetch_live -- --ignored --nocapture
 │  │  ├─ state.rs               全局状态
 │  │  └─ config.rs              配置读写
 │  └─ tests/                    集成测试与签名对拍
+├─ scripts/
+│  └─ gen_golden.py             生成签名对拍用的 golden 数据
 └─ tests/                       前端测试
 ```
 
@@ -203,8 +214,19 @@ cargo test --test self_fetch_live -- --ignored --nocapture
 
 - 收藏接口的 `count` 上限为 20，超出返回空数据
 - 收藏接口在「无更多数据」时仍可能返回非零 `status_code`，需先取数据再判断错误码
-- 收藏接口的 `cursor` 不前进时必须终止循环，否则会重复抓取同一页
-- 风控错误码（如 `3002279`、`2150`）会自行恢复，程序会做一次退避重试并给出可读提示
+- `has_more` 只作提示，不作终止条件。数据量大时服务端会中途返回 `has_more=0`，据此退出会让几千个作品只抓到几百个
+- 单页为空同样不是到底信号。服务端在分片边界、限流或分桶切换时会吐一次空页，后续页仍有数据；程序在连续 5 页为空时才判定结束
+- 游标不前进时必须终止循环，否则会重复抓取同一页
+- 列表尾部的游标会归零并从第一页重放，程序记录走过的游标值，遇到重复值即停止
+- 风控错误码（如 `3002279`、`2150`）会自行恢复，程序对同一页最多重试 5 次，间隔 5/10/20/40/60 秒
+- 中途单页失败不会丢弃已抓到的页：重试耗尽后保留已有结果并提示未抓全
+- 账号资料里的点赞总数（`favoriting_count`）是历史累计值，含已删除、已隐藏的作品，因此实际可翻到的数量通常小于该数字
+
+### 大列表性能
+
+- 分页抓取时每页解析完即释放原始响应，内存不随作品数增长
+- 列表按 150 行一档增量渲染，滚动到底部继续加载，不会一次性生成几千行 DOM
+- 勾选状态由 id 集合维护，全选/反选/框选在几千条量级下仍是 O(1) 追加
 
 ## 常见问题
 

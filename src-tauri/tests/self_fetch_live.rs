@@ -54,15 +54,15 @@ async fn empty_url_fetches_my_own_works() {
     assert!(!me.sec_uid.is_empty(), "应拿到 sec_uid");
 
     // 留空 URL + 主页模式 → 抓自己
-    let (p, list) = client
+    let (p, outcome) = client
         .fetch_all("", &cookie, FetchMode::Post, || false, |_| {}, |page, l| {
             println!("  第 {page} 页: {} 条", l.len());
         })
         .await
         .expect("fetch self");
 
-    println!("抓取到 {} 个作品，nickname={}", list.len(), p.nickname);
-    assert!(!list.is_empty(), "自己账号应至少有一个作品");
+    println!("抓取到 {} 个作品，nickname={}", outcome.count, p.nickname);
+    assert!(outcome.count > 0, "自己账号应至少有一个作品");
     assert_eq!(p.sec_uid, me.sec_uid, "应是同一个账号");
 }
 
@@ -76,7 +76,7 @@ async fn empty_url_works_for_favorite_and_collect() {
 
     for mode in [FetchMode::Favorite, FetchMode::Collect] {
         match client.fetch_all("", &cookie, mode, || false, |_| {}, |_, _| {}).await {
-            Ok((_, list)) => println!("{:?} 留空抓自己: {} 条", mode, list.len()),
+            Ok((_, outcome)) => println!("{:?} 留空抓自己: {} 条", mode, outcome.count),
             Err(e) => println!("{:?} 失败（可能接口需要特定权限）: {e}", mode),
         }
     }

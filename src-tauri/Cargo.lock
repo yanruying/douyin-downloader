@@ -978,11 +978,10 @@ dependencies = [
 
 [[package]]
 name = "douyin-downloader"
-version = "4.0.0"
+version = "4.0.2"
 dependencies = [
  "chrono",
  "futures-util",
- "log",
  "md-5",
  "percent-encoding",
  "rand 0.9.5",
@@ -996,7 +995,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
- "tauri-plugin-fs",
  "tauri-plugin-opener",
  "thiserror 2.0.21",
  "tokio",

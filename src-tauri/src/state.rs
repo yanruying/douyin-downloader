@@ -176,15 +176,46 @@ impl AppState {
     }
 
     /// 按 id 子集取某模式的任务（前端勾选后下载）。
+    ///
+    /// 直接拿读锁过滤，不先整份克隆：几千条任务时克隆一次的代价
+    /// 和「勾选后立刻开始下载」的响应速度直接相关。
     pub fn tasks_by_ids(&self, mode: FetchMode, ids: &[String]) -> Vec<crate::models::TaskRow> {
-        let st = self.mode(mode);
+        let g = self.modes.read().expect("modes poisoned");
+        let Some(st) = g.get(mode.slug()) else {
+            return Vec::new();
+        };
         if ids.is_empty() {
-            return st.tasks;
+            return st.tasks.clone();
         }
         let set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
         st.tasks
-            .into_iter()
+            .iter()
             .filter(|t| set.contains(t.id.as_str()))
+            .cloned()
             .collect()
+    }
+
+    /// 只取某模式的摘要（不含任务列表）。
+    ///
+    /// 命令层大量需要 summary 而完全不需要 tasks；
+    /// 走 `mode()` 会把几千条任务一并克隆，纯属浪费。
+    pub fn summary_of(&self, mode: FetchMode) -> crate::models::FetchSummary {
+        self.read_mode(mode, |st| st.summary.clone())
+            .unwrap_or_default()
+    }
+
+    /// 只读访问某模式，闭包内不要做耗时操作（持读锁）。
+    pub fn read_mode<R>(&self, mode: FetchMode, f: impl FnOnce(&ModeState) -> R) -> Option<R> {
+        let g = self.modes.read().expect("modes poisoned");
+        g.get(mode.slug()).map(f)
+    }
+
+    /// 任意模式是否正在抓取。
+    pub fn any_fetching(&self) -> bool {
+        self.modes
+            .read()
+            .expect("modes poisoned")
+            .values()
+            .any(|m| m.fetching)
     }
 }

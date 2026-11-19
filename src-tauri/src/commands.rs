@@ -324,11 +324,11 @@ pub async fn start_fetch(
     if req.url.trim().is_empty() && req.mode == FetchMode::Single {
         return Err(AppError::msg("请粘贴作品链接"));
     }
-    if state.mode(req.mode).fetching {
+    if state.read_mode(req.mode, |st| st.fetching).unwrap_or(false) {
         return Err(AppError::msg("该页面已在获取中，请先停止"));
     }
     // 同一时刻只允许一个页面在抓取：并发请求不同接口更容易触发风控
-    if state.all_modes().iter().any(|m| m.fetching) {
+    if state.any_fetching() {
         return Err(AppError::msg("已有一个页面正在获取，请等待完成或先停止"));
     }
 
@@ -377,46 +377,68 @@ pub async fn start_fetch(
         };
 
         let result = douyin
-            .fetch_all(&url, &cookie, mode, move || stop_cb.load(Ordering::Relaxed), prof_cb, |page, list| {
-                let owner = owner_for_page
-                    .lock()
-                    .map(|o| o.clone())
-                    .unwrap_or_default();
-                let rows = crate::douyin::parser::parse_all(list, &owner);
-                let added = rows.len() as u32;
-                let _ = app_cb.emit(
-                    EV_FETCH_PAGE,
-                    FetchPageEvent {
-                        mode: slug_cb.clone(),
-                        page,
-                        added,
-                        total: 0,
-                        tasks: rows,
-                    },
-                );
+            .fetch_all(&url, &cookie, mode, move || stop_cb.load(Ordering::Relaxed), prof_cb, {
+                // 既然不再用 has_more 终止翻页，就必须自己防重复：
+                // 服务端在尾页反复返回同一批数据时，游标一直变而内容不变。
+                // 前端按 id 去重，后端也必须去重，否则两边条数对不上。
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                move |page, list| {
+                    let owner = owner_for_page
+                        .lock()
+                        .map(|o| o.clone())
+                        .unwrap_or_default();
+                    // 就地解析：回调返回后原始 JSON 就被释放，
+                    // 抓几千条作品时内存不再随页数线性增长。
+                    let rows = crate::douyin::parser::parse_all(list, &owner);
+                    let stats = crate::douyin::parser::stats_all(list);
+                    let mut fresh = Vec::with_capacity(rows.len());
+                    for r in rows {
+                        if seen.insert(r.id.clone()) {
+                            fresh.push(r);
+                        }
+                    }
+                    let added = fresh.len() as u32;
+                    // 后端是权威列表，前端只是投影：每页把扁平行推过去即可
+                    let total = if let Some(st) = app_cb.try_state::<AppState>() {
+                        st.with_mode(mode, |s| {
+                            s.tasks.extend(fresh.iter().cloned());
+                            s.stats.extend(stats);
+                            s.tasks.len() as u32
+                        })
+                    } else {
+                        added
+                    };
+                    let _ = app_cb.emit(
+                        EV_FETCH_PAGE,
+                        FetchPageEvent {
+                            mode: slug_cb.clone(),
+                            page,
+                            added,
+                            total,
+                            tasks: fresh,
+                        },
+                    );
+                }
             })
             .await;
 
         let st = app2.state::<AppState>();
         match result {
-            Ok((profile, awemes)) => {
-                // 权威列表以 awemes 为准；每页已增量推送过，这里覆盖而非追加
-                let owner = crate::douyin::parser::Owner::from_profile(&profile);
-                let tasks = crate::douyin::parser::parse_all(&awemes, &owner);
-                let stats = crate::douyin::parser::stats_all(&awemes);
-                let count = tasks.len();
-                let summary = FetchSummary {
-                    nickname: profile.nickname.clone(),
-                    unique_id: profile.unique_id.clone(),
-                    sec_uid: profile.sec_uid.clone(),
-                    count,
-                    mode: slug.clone(),
-                };
-                st.with_mode(mode, |s| {
-                    s.tasks = tasks;
-                    s.stats = stats;
-                    s.summary = summary.clone();
+            Ok((profile, outcome)) => {
+                // 任务与统计已在回调里逐页写入，这里只收尾
+                if let Some(w) = &outcome.warning {
+                    log(&app2, "error", format!("{}未抓全：{w}", mode.label()));
+                }
+                let count = st.with_mode(mode, |s| {
+                    s.summary = FetchSummary {
+                        nickname: profile.nickname.clone(),
+                        unique_id: profile.unique_id.clone(),
+                        sec_uid: profile.sec_uid.clone(),
+                        count: s.tasks.len(),
+                        mode: slug.clone(),
+                    };
                     s.fetching = false;
+                    s.summary.count
                 });
 
                 // 把刚抓到的用户记进用户列表，下次可直接点开
@@ -426,6 +448,7 @@ pub async fn start_fetch(
                     "info",
                     format!("{}完成：{} 个文件", mode.label(), count),
                 );
+                let summary = st.summary_of(mode);
                 let _ = app2.emit(EV_FETCH_DONE, summary);
             }
             Err(e) => {
@@ -475,7 +498,7 @@ pub async fn batch_fetch(
     if req.mode == FetchMode::Single {
         return Err(AppError::msg("批量获取不支持单作品模式"));
     }
-    if state.all_modes().iter().any(|m| m.fetching) {
+    if state.any_fetching() {
         return Err(AppError::msg("已有抓取任务在进行中"));
     }
 
@@ -526,37 +549,54 @@ pub async fn batch_fetch(
                             *o = crate::douyin::parser::Owner::from_profile(p);
                         }
                     },
-                    |page, list| {
-                        let owner = owner_for_page
-                            .lock()
-                            .map(|o| o.clone())
-                            .unwrap_or_default();
-                        let rows = crate::douyin::parser::parse_all(list, &owner);
-                        let _ = app_cb.emit(
-                            EV_FETCH_PAGE,
-                            FetchPageEvent {
-                                mode: slug_cb.clone(),
-                                page,
-                                added: rows.len() as u32,
-                                total: 0,
-                                tasks: rows,
-                            },
-                        );
+                    {
+                        // 批量抓取跨用户合并到同一页面，同样要防重复
+                        let mut seen: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        move |page, list| {
+                            let owner = owner_for_page
+                                .lock()
+                                .map(|o| o.clone())
+                                .unwrap_or_default();
+                            // 就地解析，原始 JSON 用完即弃
+                            let rows = crate::douyin::parser::parse_all(list, &owner);
+                            let stats = crate::douyin::parser::stats_all(list);
+                            let mut fresh = Vec::with_capacity(rows.len());
+                            for r in rows {
+                                if seen.insert(r.id.clone()) {
+                                    fresh.push(r);
+                                }
+                            }
+                            let added = fresh.len() as u32;
+                            let st = app_cb.state::<AppState>();
+                            st.with_mode(mode, |s| {
+                                s.tasks.extend(fresh.iter().cloned());
+                                s.stats.extend(stats);
+                            });
+                            let _ = app_cb.emit(
+                                EV_FETCH_PAGE,
+                                FetchPageEvent {
+                                    mode: slug_cb.clone(),
+                                    page,
+                                    added,
+                                    total: 0,
+                                    tasks: fresh,
+                                },
+                            );
+                        }
                     },
                 )
                 .await;
 
             match result {
-                Ok((profile, awemes)) => {
-                    let owner = crate::douyin::parser::Owner::from_profile(&profile);
-                    let rows = crate::douyin::parser::parse_all(&awemes, &owner);
-                    let stats = crate::douyin::parser::stats_all(&awemes);
-                    total_count += rows.len();
+                Ok((profile, outcome)) => {
+                    if let Some(w) = &outcome.warning {
+                        log(&app2, "error", format!("{u} 未抓全：{w}"));
+                    }
+                    total_count += outcome.count as usize;
                     ok_users += 1;
                     let st = app2.state::<AppState>();
                     st.with_mode(mode, |s| {
-                        s.tasks.extend(rows);
-                        s.stats.extend(stats);
                         if s.summary.nickname.is_empty() {
                             s.summary.nickname = profile.nickname.clone();
                             s.summary.unique_id = profile.unique_id.clone();
@@ -626,7 +666,7 @@ pub fn get_runtime(state: State<'_, AppState>) -> Vec<ModeState> {
 #[tauri::command]
 pub fn get_tasks(state: State<'_, AppState>, mode: String) -> AppResult<Vec<TaskRow>> {
     let m = parse_mode(&mode)?;
-    Ok(state.mode(m).tasks)
+    Ok(state.read_mode(m, |st| st.tasks.clone()).unwrap_or_default())
 }
 
 // ---------------- 下载 ----------------
@@ -655,15 +695,15 @@ pub async fn start_download(
     req: DownloadReq,
 ) -> AppResult<BusyState> {
     let mode = req.mode;
-    if state.all_modes().iter().any(|m| m.downloading) {
+    if state.downloading_count() > 0 {
         return Err(AppError::msg("已有下载任务在进行中，请等待完成"));
     }
-    if state.mode(mode).fetching {
+    if state.read_mode(mode, |st| st.fetching).unwrap_or(false) {
         return Err(AppError::msg("正在获取作品，请先等待获取完成"));
     }
 
     let settings = state.settings_snapshot();
-    let summary = state.mode(mode).summary;
+    let summary = state.summary_of(mode);
     let selected = state.tasks_by_ids(mode, &req.ids);
     if selected.is_empty() {
         return Err(AppError::msg("请先选择要下载的作品"));
@@ -829,8 +869,8 @@ pub fn stop_download(app: AppHandle, state: State<'_, AppState>, mode: String) {
 /// 供关闭窗口前查询：是否还有任务在跑。
 #[tauri::command]
 pub fn query_busy(state: State<'_, AppState>) -> BusyState {
-    let downloading = state.all_modes().iter().any(|m| m.downloading);
-    let fetching = state.all_modes().iter().any(|m| m.fetching);
+    let downloading = state.downloading_count() > 0;
+    let fetching = state.any_fetching();
     BusyState {
         busy: downloading || fetching,
         downloading,
@@ -916,24 +956,28 @@ pub struct ExportResult {
 pub fn export_urls(state: State<'_, AppState>, mode: String) -> AppResult<ExportResult> {
     let m = parse_mode(&mode)?;
     let settings = state.settings_snapshot();
-    let st = state.mode(m);
-    if st.tasks.is_empty() {
+    // 只取导出需要的两样东西：任务与摘要。整份 ModeState 克隆会连
+    // stats 一起复制，几千条时白付一笔内存与时间。
+    let (summary, tasks) = state
+        .read_mode(m, |st| (st.summary.clone(), st.tasks.clone()))
+        .unwrap_or_default();
+    if tasks.is_empty() {
         return Err(AppError::msg("没有作品数据可以导出"));
     }
     let folder = crate::config::urls_root(&settings);
     let base = crate::config::user_folder_name(
-        if st.summary.nickname.is_empty() {
+        if summary.nickname.is_empty() {
             "抖音用户"
         } else {
-            &st.summary.nickname
+            &summary.nickname
         },
-        &st.summary.unique_id,
+        &summary.unique_id,
         m.slug(),
     );
     let path = crate::export::write_urls(
         &folder,
         &base,
-        &st.tasks,
+        &tasks,
         settings.add_title_when_export_urls,
     )?;
     Ok(ExportResult { path })
@@ -943,24 +987,26 @@ pub fn export_urls(state: State<'_, AppState>, mode: String) -> AppResult<Export
 pub fn export_excel(state: State<'_, AppState>, mode: String) -> AppResult<ExportResult> {
     let m = parse_mode(&mode)?;
     let settings = state.settings_snapshot();
-    let st = state.mode(m);
-    if st.tasks.is_empty() {
+    let (summary, tasks, stats) = state
+        .read_mode(m, |st| (st.summary.clone(), st.tasks.clone(), st.stats.clone()))
+        .unwrap_or_default();
+    if tasks.is_empty() {
         return Err(AppError::msg("没有作品数据可以导出"));
     }
     // 有统计就用真实互动数据；老版本残留的空 stats 则退回只导出可下载字段
-    let rows = if st.stats.is_empty() {
-        build_excel_rows(&st.tasks)
+    let rows = if stats.is_empty() {
+        build_excel_rows(&tasks)
     } else {
-        st.stats.iter().map(stat_to_row).collect()
+        stats.iter().map(stat_to_row).collect()
     };
     let folder = crate::config::excel_root(&settings);
     let base = crate::config::user_folder_name(
-        if st.summary.nickname.is_empty() {
+        if summary.nickname.is_empty() {
             "抖音用户"
         } else {
-            &st.summary.nickname
+            &summary.nickname
         },
-        &st.summary.unique_id,
+        &summary.unique_id,
         m.slug(),
     );
     let path = crate::export::write_xlsx(&folder, &base, &rows)?;
@@ -1085,19 +1131,3 @@ pub fn open_download_root(app: AppHandle, state: State<'_, AppState>) -> AppResu
     Ok(())
 }
 
-/// 诊断：读登录窗口 cookie 存储，返回 (数量, 是否含 sessionid)。
-#[tauri::command]
-pub fn debug_cookie_probe(app: AppHandle) -> AppResult<(usize, bool, Vec<String>)> {
-    let win = app
-        .get_webview_window(crate::auth::LOGIN_LABEL)
-        .ok_or_else(|| AppError::msg("登录窗口未打开"))?;
-    let cookie = crate::auth::read_cookie_string(&win)?;
-    let names: Vec<String> = cookie
-        .split(';')
-        .filter_map(|kv| kv.split('=').next())
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .collect();
-    let has = crate::auth::has_session(&cookie);
-    Ok((names.len(), has, names))
-}

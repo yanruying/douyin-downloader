@@ -21,7 +21,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let app_dir = config::default_app_dir();
             config::ensure(&app_dir).ok();
@@ -79,10 +78,7 @@ pub fn run() {
 
                 let app = window.app_handle();
                 let (busy, downloading) = match app.try_state::<AppState>() {
-                    Some(st) => (
-                        st.any_busy(),
-                        st.all_modes().iter().any(|m| m.downloading),
-                    ),
+                    Some(st) => (st.any_busy(), st.downloading_count() > 0),
                     None => (false, false),
                 };
                 tray::emit_close_request(app, busy, downloading);
@@ -119,7 +115,6 @@ pub fn run() {
             commands::open_path,
             commands::download_base,
             commands::open_download_root,
-            commands::debug_cookie_probe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

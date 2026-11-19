@@ -34,6 +34,7 @@ export function applyRuntime(list: ModeState[]) {
     const m = st.mode as FetchMode
     if (modes.value[m]) {
       modes.value[m] = { ...modes.value[m], ...st }
+      resetIdCache(m)
     }
   }
 }
@@ -42,14 +43,42 @@ export function patchMode(m: FetchMode, patch: Partial<ModeState>) {
   modes.value[m] = { ...modes.value[m], ...patch }
 }
 
-/** 增量追加某模式的作品（按 id 去重，保持到达顺序） */
+/**
+ * 增量追加某模式的作品（按 id 去重，保持到达顺序）。
+ *
+ * 去重集合按模式缓存，不要每页重建——抓几千条时
+ * `new Set(tasks.map(...))` 是 O(n²)，会让界面在最后几页直接卡住。
+ */
+const idCache: Partial<Record<FetchMode, Set<string>>> = {}
+
+function idsOf(m: FetchMode): Set<string> {
+  let s = idCache[m]
+  if (!s) {
+    s = new Set(modes.value[m].tasks.map((t) => t.id))
+    idCache[m] = s
+  }
+  return s
+}
+
+/** 列表被整体替换（抓取开始 / 清空 / 恢复快照）后必须重置缓存 */
+export function resetIdCache(m: FetchMode) {
+  idCache[m] = undefined
+}
+
 export function appendTasks(m: FetchMode, rows: TaskRow[]) {
   const cur = modes.value[m]
   if (!rows.length) return
-  const known = new Set(cur.tasks.map((t) => t.id))
-  const fresh = rows.filter((t) => !known.has(t.id))
+  const known = idsOf(m)
+  const fresh: TaskRow[] = []
+  for (const t of rows) {
+    if (known.has(t.id)) continue
+    known.add(t.id)
+    fresh.push(t)
+  }
   if (fresh.length) {
-    modes.value[m] = { ...cur, tasks: cur.tasks.concat(fresh) }
+    // 原地 push：Vue 3 的响应式数组能精确追踪追加，
+    // 换成 `{...cur, tasks: concat(...)}` 会让表格整表重渲染。
+    cur.tasks.push(...fresh)
   }
 }
 
@@ -92,6 +121,7 @@ export const displayName = computed(() => profile.value.nickname)
 export function resetMode(m: FetchMode) {
   const url = modes.value[m].url
   modes.value[m] = { ...emptyModeState(m), url }
+  resetIdCache(m)
 }
 
 export function progressPercent(st: ModeState): number {
